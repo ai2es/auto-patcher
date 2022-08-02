@@ -1,5 +1,4 @@
 import xarray as xr
-import pygrib
 import numpy as np
 import configparser
 import os
@@ -12,12 +11,13 @@ import warnings
 import xesmf as xe
 import random
 from collections import OrderedDict
+from tensorflow.keras.utils import to_categorical
 
 
 # NOTE: netcdf4 also need to be manually installed as dependencies
 #       IMPORTANT: First thing to install on new env is xesmf/esmpy using the command conda install -c conda-forge xesmf esmpy=8.0.0
 #       this will install python as well. Second thing to install is cftime. Third thing is to install dask. Then see netcdf4 above.  
-#       tensorflow must also be version 2.7.0 or greater.
+#       tensorflow must also be version 2.7.0 or greater (if using keras-unet-collection in another script).
 
 # NOTE: Spatial dataset delineation in file/path naming not currently supported.
 
@@ -35,49 +35,20 @@ class Patcher:
         self.run_num = run_num
         warnings.simplefilter('once', category=RuntimeWarning)
 
-    
-    # TODO: Move this to the IOHelper script with collection of functions
-    # TODO: Fix this with changed create_file_list
-    def list_possible_level_types(self, list_labels=False):
-        # Pull first file in data directory to sample metadata
-        all_data_files = self.create_file_list(list_labels = list_labels)
-        one_file = all_data_files[0]
 
-        # Level types must be printed in a different way depending on filetype
-        if '.grib' in os.path.split(one_file)[-1]:
-            grbs = pygrib.open(one_file)
-            all_level_types = np.unique([grb["typeOfLevel"] for grb in grbs])
-            print(all_level_types)
-            grbs.close()
+    def view_dataset(self, ds_path):
+        ds = self._netcdf_loader(ds_path)
+        ds_keys = [key for key in ds.keys()]
 
-        elif '.nc' in os.path.split(one_file)[-1]:
-            print("File is not of type \"grib\" or \"grib2\", netCDF not implemented yet.")
-            # TODO: Implement
-        
-        else:
-            raise IOError(os.path.split(one_file)[-1] + " is an unsupported filetype. Only filetypes supported currenly are .nc and .grib/.grib2")
+        print("---------------------------")
+        print("DATASET XARRAY SUMMARY:")
+        print("---------------------------")
+        print(ds)
 
-
-    # TODO: Move this to the IOHelper script with collection of functions
-    # TODO: Fix this with changed create_file_list
-    def list_possible_root_keys(self, list_labels=False):
-        # Pull first file in data directory to sample metadata
-        all_data_files = self.create_file_list(list_labels = list_labels)
-        one_file = all_data_files[0]
-
-        # Keys must be printed in a different way depending on filetype
-        if '.grib' in os.path.split(one_file)[-1]:
-            grbs = pygrib.open(one_file)
-            root_keys = np.unique(np.concatenate(np.array([grb.keys() for grb in grbs], dtype=object)))
-            print(root_keys)
-            grbs.close()
-
-        elif '.nc' in os.path.split(one_file)[-1]:
-            print("File is not of type \"grib\" or \"grib2\", netCDF not implemented yet.")
-            # TODO: Implement
-        
-        else:
-            raise IOError(os.path.split(one_file)[-1] + " is an unsupported filetype. Only filetypes supported currenly are .nc and .grib/.grib2")
+        print("---------------------------")
+        print("DATASET VARS AND/OR COORDS KEY(s):")
+        print("---------------------------")
+        print(ds_keys)
 
 
     # TODO: MAJOR: Make exception in here for case where decode_cf=False has to run but the dataset's has_time_cord=True
@@ -498,13 +469,29 @@ class Patcher:
         else:
             setting_name = "custom_vars"
 
-        for custom_var in data_settings_cfgs[current_ds_index]["Modification"][setting_name]:
+        for j, custom_var in enumerate(data_settings_cfgs[current_ds_index]["Modification"][setting_name]):
             return_dict = OrderedDict()
             exec(custom_var, globals().update(locals()), return_dict)
             return_list = list(return_dict.items())
             var_name = return_list[-1][0]
             values = return_list[-1][-1]
             ds = ds.assign({var_name: values})
+            
+            n_classes = data_settings_cfgs[current_ds_index]["Modification"]["n_classes_for_new_vars"][j]
+            if n_classes >= 2:
+                all_keys = [key for key in ds.keys()]
+                previous_key = all_keys[-1]
+                new_var = ds[previous_key]
+                new_var_dim_names = new_var.dims
+
+                new_var_cat = to_categorical(new_var, num_classes=n_classes)
+
+                for i in range(new_var_cat.shape[-1]):
+                    new_var_class_i = new_var_cat[...,i]
+                    new_var_name_i = previous_key + "_" + str(i)
+                    ds = ds.assign({new_var_name_i: (new_var_dim_names, new_var_class_i)})
+                
+                ds = ds.drop(previous_key)
 
         return ds
 

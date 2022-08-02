@@ -11,10 +11,10 @@
 #SBATCH --job-name=generate_patches
 #SBATCH --mail-user=tobias.schmidt@ou.edu
 #SBATCH --mail-type=ALL
-#SBATCH --chdir=/home/tgschmidt/hail/src
+#SBATCH --chdir=/home/tgschmidt/auto-patcher/src
 #SBATCH --array=0-0
 #
 #################################################
-/home/tgschmidt/sn_env/bin/python -u patcher.py --config_path /home/tgschmidt/hail/configs/patcher_oscer.cfg --run_num $SLURM_ARRAY_TASK_ID
+/home/tgschmidt/sn_env/bin/python -u patcher.py --config_path /home/tgschmidt/auto-patcher/configs/patcher_oscer.cfg --run_num $SLURM_ARRAY_TASK_ID
 
 
