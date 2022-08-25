@@ -12,7 +12,7 @@
 #SBATCH --mail-user=tobias.schmidt@ou.edu
 #SBATCH --mail-type=ALL
 #SBATCH --chdir=/home/tgschmidt/auto-patcher/src
-#SBATCH --array=0-499
+#SBATCH --array=0-0
 #
 #################################################
 /home/tgschmidt/sn_env/bin/python -u patcher.py --config_path /home/tgschmidt/auto-patcher/configs/2hail.cfg --run_num $SLURM_ARRAY_TASK_ID
