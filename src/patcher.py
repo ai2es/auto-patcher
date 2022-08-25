@@ -405,6 +405,8 @@ class Patcher:
             label_patches.to_netcdf(label_patch_path)
 
         print("Completed on search number: " + str(main_loop_counter))
+        print("Final patch count per balanced class:")
+        print(filtered_balanced_counts)
 
 
     def _find_indeces_of_matching_datasets(self, index_dict, flags_dict, counters_dict, lowest_resolution_dates, all_found_datetimes_adjusted, all_found_time_indeces_adjusted,
