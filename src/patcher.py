@@ -13,6 +13,7 @@ import random
 from collections import OrderedDict
 from tensorflow.keras.utils import to_categorical
 import netCDF4 as nc
+from operator import itemgetter
 
 
 # NOTE: netcdf4 also need to be manually installed as dependencies
@@ -237,6 +238,7 @@ class Patcher:
         max_num_of_searches = settings_dict["Stopping"]["max_num_of_searches"]
         patches_per_time = settings_dict["Patches"]["patches_per_unit_time"]
         chosen_resolution = settings_dict["Patches"]["chosen_resolution"]
+        self.dataset_names = settings_dict["Input_Data"]["dataset_names"]
         if settings_dict["Patches"]["max_times_num_per_file"] is None: # NOTE: This is for the number of specific times alowed to be extraced from one set of files. NOT NUMBER OF PATCHES ALLOWED PER FILE
             max_times_num_per_file = np.inf
         else:
@@ -596,6 +598,11 @@ class Patcher:
             # Select only the data we want
             ds = ds[data_settings_cfgs[i]["Data"]["selected_vars"]]
 
+            # If only one key is given ds is reverted to a xarray dataarray.
+            # This is not useful for later functions so this is changed back to a xarray dataset
+            if type(ds) is xr.core.dataarray.DataArray:
+                ds = ds.to_dataset()
+
             ds = ds.assign_coords(lon=((y_dim_name,x_dim_name), lons))
             ds = ds.assign_coords(lat=((y_dim_name,x_dim_name), lats))
 
@@ -641,63 +648,174 @@ class Patcher:
 
         return reproj_datasets, dataset_empty_or_out_of_range
 
+    
+    # Reshapes numpy arrays from (patch_row_num, patch_col_num, n_variables_across_all_datasets, patch_dim_0, patch_dim_1)
+    # to (n_patches, n_variables_across_all_datasets, n_pixels_per_patch). See use below.
+    def _np_reshaper(self, master_np_array):
+        list_ds_shape = list(master_np_array.shape)
+        patch_dim0 =  list_ds_shape.pop(3)
+        patch_dim1 = list_ds_shape[3]
+        list_ds_shape[3] = patch_dim1*patch_dim0
+        patch_index0 = list_ds_shape.pop(0)
+        patch_index1 = list_ds_shape[0]
+        list_ds_shape[0] = patch_index0*patch_index1
 
-    # TODO: This is a runtime bottleneck. Improve.
-    # TODO: ALSO MAKE SURE THE FILTERS DON"T ALLOW PATCHES THAT OVERLAP
-    def _filter_patch_pixels(self, reproj_datasets, patch_size, grid_size, x_dim_name, y_dim_name, data_settings_cfgs, filtered_balanced_counts):
-        vaid_pixels_bool = np.ones((grid_size[0],grid_size[1],len(filtered_balanced_counts)))
+        return master_np_array.reshape(list_ds_shape)
+
+
+    # Use numpy broadcasting (memory efficient) to create one large numpy out of all datasets.
+    # Used for run efficient mass modifications and filters on all patches. (FAR more effective than loops)
+    def _make_master_np_array(self, reproj_datasets, x_dim_name, y_dim_name, num_dims_to_concat=3):
+        reproj_dataarrays_broadcasted = []
+        new_array_shape = ()
+        new_np_array_dim_keys = ()
+        data_arrays_dim_mappings = []
+        all_new_keys = [] # Dimension keys in final broadcasted form
+        reproj_dataarrays = []
+        all_keys = [] # This is dimension keys, not var keys
+        all_var_keys = [] # This is var keys
+        dataset_names = self.dataset_names
+
+        for i, ds in enumerate(reproj_datasets):
+            da = ds.to_array()
+            all_keys.append(list(ds.dims))
+            if num_dims_to_concat == 4:
+                da = da.transpose("variable", x_dim_name, y_dim_name, "time_dim", ...)
+            else:
+                da = da.transpose("variable", x_dim_name, y_dim_name, ...)
+
+            reproj_dataarrays.append(da)
+            all_var_keys.append(list(ds.keys()))
+
+        all_var_keys = np.concatenate(all_var_keys, axis=0)
+
+        for j, reproj_dataarray in enumerate(reproj_dataarrays):
+            new_keys = [dataset_names[j]+"_"+key for key in all_keys[j][num_dims_to_concat:]]
+            dim_mapping = {key:ind+num_dims_to_concat for ind, key in enumerate(new_keys)}
+            data_arrays_dim_mappings.append(dim_mapping)
+            all_new_keys.append(new_keys)
+            new_array_shape = new_array_shape + reproj_dataarray.shape[num_dims_to_concat:]
+            new_np_array_dim_keys = new_np_array_dim_keys + tuple(dim_mapping.keys())
+
+        new_np_array_dim_mappings = {key:ind+num_dims_to_concat for ind, key in enumerate(new_np_array_dim_keys)}
+
+        # TODO: Reduce memory consumption with less names here?
+        for j, reproj_dataarray in enumerate(reproj_dataarrays):
+            reproj_dataarray_expanded = np.expand_dims(reproj_dataarray, tuple(np.arange(len(reproj_dataarray.shape),len(new_array_shape)+num_dims_to_concat)))
+            if len(all_new_keys[j]) != 0:
+                reproj_dataarray_expanded = np.moveaxis(reproj_dataarray_expanded, itemgetter(*all_new_keys[j])(data_arrays_dim_mappings[j]), 
+                                                                            itemgetter(*all_new_keys[j])(new_np_array_dim_mappings))
+            reproj_dataarray_broadcasted = np.broadcast_to(reproj_dataarray_expanded, reproj_dataarray_expanded.shape[:num_dims_to_concat] + new_array_shape)
+            reproj_dataarrays_broadcasted.append(reproj_dataarray_broadcasted)
+
+        return np.concatenate(reproj_dataarrays_broadcasted, axis=0), all_var_keys, all_new_keys
+
+
+    def _filter_patch_pixels(self, reproj_datasets, patch_size, x_dim_name, y_dim_name, data_settings_cfgs, patches_per_time, shuffle, filter_using_time):
         filtered_balanced_pixels = []
+        all_filters = []
+        all_thresholds = []
+        all_balanced_filters = []
+        all_balanced_thresholds = []
+        for data_settings_cfg in data_settings_cfgs:
+            for i, filter in enumerate(data_settings_cfg["Filtration"]["filters"]):
+                all_filters.append(filter)
+                all_thresholds.append(data_settings_cfg[i]["Filtration"]["filter_patch_threshold"])
+            for i, filter in enumerate(data_settings_cfg["Filtration"]["filters_balanced"]):
+                all_balanced_filters.append(filter)
+                all_balanced_thresholds.append(data_settings_cfg[i]["Filtration"]["filter_patch_threshold_balanced"])
 
-        for x in range(grid_size[0]):
-            for y in range(grid_size[1]):
-                filter_count_local = 0
-                for i, ds in enumerate(reproj_datasets):
-                    patch = self._make_patch(ds, grid_size, patch_size, x, y, x_dim_name, y_dim_name)
-                    if patch is None:
-                        vaid_pixels_bool[x,y,:] = 0
-                        break
-                    failed_filter = False
+        if len(all_balanced_filters) == 0:
+            num_of_filters = 1
+        else:
+            num_of_filters = len(all_balanced_filters)
 
-                    for key_name in patch.keys():
-                        data_var = patch[key_name].to_numpy()
-                        if np.isnan(data_var).any():
-                            failed_filter = True
-                            break
+        # NOTE: This new process assumes that any time dimensions have been stacked together in each individual xarray dataset object
 
-                    for j, filter in enumerate(data_settings_cfgs[i]["Filtration"]["filters"]):
-                        return_dict = OrderedDict()
-                        exec(filter, globals().update(locals()), return_dict)
-                        return_list = list(return_dict.items())
-                        values = return_list[-1][-1]
-                        if np.sum(values) < data_settings_cfgs[i]["Filtration"]["filter_patch_threshold"][j]:
-                            failed_filter = True
-                            break
+        # Determine how many dims to concat based on if the time dim is present
+        if filter_using_time:
+            num_master_array_dims_to_concat = 4
+        else:
+            num_master_array_dims_to_concat = 3
 
-                    if failed_filter:
-                        vaid_pixels_bool[x,y,:] = 0
-                        patch.close()
-                        break
+        # Creates a broadcasted numpy array of all our data across all dimensions for powerful manipulation
+        dataset_master_np_array, var_keys, dim_keys = self._make_master_np_array(reproj_datasets, x_dim_name, y_dim_name, num_master_array_dims_to_concat)
 
-                    for j, filter in enumerate(data_settings_cfgs[i]["Filtration"]["filters_balanced"]):
-                        return_dict = OrderedDict()
-                        exec(filter, globals().update(locals()), return_dict)
-                        return_list = list(return_dict.items())
-                        values = return_list[-1][-1]
-                        if np.sum(values) < data_settings_cfgs[i]["Filtration"]["filter_patch_threshold_balanced"][j]:
-                            vaid_pixels_bool[x,y,filter_count_local] = 0
-                        filter_count_local = filter_count_local + 1
-                    
-                    patch.close()
+        # If domains do not nicely line up with factors of patch size, cut out extra
+        if dataset_master_np_array.shape[1] % patch_size != 0:
+            extra_pixels = dataset_master_np_array.shape[1] % patch_size
+            dataset_master_np_array = np.take(dataset_master_np_array, np.arange(dataset_master_np_array.shape[1]-extra_pixels), axis=1)
+        if dataset_master_np_array.shape[2] % patch_size != 0:
+            extra_pixels = dataset_master_np_array.shape[2] % patch_size
+            dataset_master_np_array = np.take(dataset_master_np_array, np.arange(dataset_master_np_array.shape[2]-extra_pixels), axis=2)
+
+        # Make array for tracking indeces in original dataset of each new patch
+        ds_dims_x, ds_dims_y = np.meshgrid(np.arange(dataset_master_np_array.shape[1]), np.arange(dataset_master_np_array.shape[2]))
+        ds_dims = np.stack([ds_dims_y, ds_dims_x], axis=0)
+
+        # Setup bool array for tracking patch rejection
+        vaid_pixels_bool = np.zeros((dataset_master_np_array.shape[1], dataset_master_np_array.shape[2], num_of_filters))
+
+        # Split our domains into evenly distributed patches
+        # shape of (patch_row_num, patch_col_num, n_variables_across_all_datasets, patch_dim_0, patch_dim_1, ...)
+        # and (patch_row_num, patch_col_num, ds_dims, patch_dim_0, patch_dim_1) respectively
+        dataset_master_np_array = np.array(np.split(dataset_master_np_array, dataset_master_np_array.shape[2]/patch_size, axis=2))
+        dataset_master_np_array = np.array(np.split(dataset_master_np_array, dataset_master_np_array.shape[2]/patch_size, axis=2))
+        ds_dims = np.array(np.split(ds_dims, ds_dims.shape[2]/patch_size, axis=2))
+        ds_dims = np.array(np.split(ds_dims, ds_dims.shape[2]/patch_size, axis=2))
+
+        # Reshape to (n_patches, n_variables_across_all_datasets, n_pixels_per_patch, ...)
+        # and (n_patches, ds_dims, n_pixels_per_patch) respectively
+        # NOTE: This may be removed later if it is deemed better to keep the other shape
+        dataset_master_np_array = self._np_reshaper(dataset_master_np_array)
+        ds_dims = self._np_reshaper(ds_dims)
+
+        # Warn if you are trying to request more patches per unit time than is possible
+        if dataset_master_np_array.shape[0] < patches_per_time:
+            warnings.warn('At least one collection of datasets at a particular search attempt does not have enough space for your given "patches_per_time". Consider using less?')
+
+        # Select the indeces for the upperleft corners of each patch only. (for the patch making function)
+        ds_dims = ds_dims[:,:,0]
+
+        # Init all patch corners of boolean array to 1. Our filters switch them to 0 if they don't meet our requirements
+        vaid_pixels_bool[ds_dims[:,0], ds_dims[:,1], :] = 1
+
+        # Mark for removal any patches that contain any nans anywhere and in any dimension
+        indeces_of_nans = np.isnan(dataset_master_np_array)
+        indeces_of_nan_test_failure = np.nonzero(np.any(indeces_of_nans, axis=tuple(np.arange(1,len(dataset_master_np_array.shape)))))
+        vaid_pixels_bool[ds_dims[indeces_of_nan_test_failure[0],0], ds_dims[indeces_of_nan_test_failure[0],1], :] = 0
+
+        # Mark for removal any patches that fail our broad filters
+        for j, filter in enumerate(all_filters):
+            return_dict = OrderedDict()
+            exec(filter, globals().update(locals()), return_dict)
+            return_list = list(return_dict.items())
+            sum_of_each_patch = return_list[-1][-1]
+            rejected_pixels = np.nonzero(sum_of_each_patch < all_thresholds[j])
+            vaid_pixels_bool[ds_dims[rejected_pixels[0],0], ds_dims[rejected_pixels[0],1], :] = 0
+
+        # Categorize patches by whether or not they fail our balanced filters
+        for j, filter in enumerate(all_balanced_filters):
+            return_dict = OrderedDict()
+            exec(filter, globals().update(locals()), return_dict)
+            return_list = list(return_dict.items())
+            sum_of_each_patch = return_list[-1][-1]
+            rejected_pixels = np.nonzero(sum_of_each_patch < all_balanced_thresholds[j])
+            vaid_pixels_bool[ds_dims[rejected_pixels[0],0], ds_dims[rejected_pixels[0],1], j] = 0
         
-        for i in range(len(filtered_balanced_counts)):
+        # TODO: Consider if this legacy code block should be replaced. Calling np.where again unnecessary?
+        for i in range(len(num_of_filters)):
             where_array = np.array(np.where(vaid_pixels_bool[:,:,i] == 1))
             # TODO: Check this np.size if statement with some tests because I don't fully trust it
             if np.size(where_array):
-                combined_lists_for_shuffle = list(zip(where_array[0], where_array[1]))
-                random.shuffle(combined_lists_for_shuffle)
-                where_array_x, where_array_y = zip(*combined_lists_for_shuffle)
-                where_array_x, where_array_y = np.array(where_array_x), np.array(where_array_y)
-                filtered_balanced_pixels.append(np.array([where_array_x, where_array_y]))
+                if shuffle:
+                    combined_lists_for_shuffle = list(zip(where_array[0], where_array[1]))
+                    random.shuffle(combined_lists_for_shuffle)
+                    where_array_x, where_array_y = zip(*combined_lists_for_shuffle)
+                    where_array_x, where_array_y = np.array(where_array_x), np.array(where_array_y)
+                    filtered_balanced_pixels.append(np.array([where_array_x, where_array_y]))
+                else:
+                    filtered_balanced_pixels.append(where_array)
             else:
                 filtered_balanced_pixels.append(np.array([[], []]))
 
@@ -716,14 +834,13 @@ class Patcher:
             y_dim_name = "lat_dim"
         else:
             y_dim_name = data_settings_cfgs[reproj_ds_index]["Data"]["y_dim_name"]
-        x_max = reproj_ds.dims[x_dim_name]
-        y_max = reproj_ds.dims[y_dim_name]
 
         all_patches = []
-        grid_size = [x_max, y_max]
         pixel_counters = np.zeros(len(filtered_balanced_counts), dtype=np.int64)
 
-        filtered_balanced_pixels = self._filter_patch_pixels(reproj_datasets,patch_size,grid_size,x_dim_name,y_dim_name,data_settings_cfgs,filtered_balanced_counts)
+        # TODO: Implement shuffle here
+        # TODO: Implement time stuff here or elsewhere?
+        filtered_balanced_pixels = self._filter_patch_pixels(reproj_datasets,patch_size,x_dim_name,y_dim_name,data_settings_cfgs, patches_per_time, False, False)
         
         for i in range(patches_per_time):
             single_dataset_patches = []
@@ -734,8 +851,7 @@ class Patcher:
                     y_i = filtered_balanced_pixels[filter_balance_ind][1][pixel_counters[filter_balance_ind]]
                     
                     for ds in reproj_datasets:
-                        # This should never return none because filtered_balanced_pixels was checked before
-                        patch = self._make_patch(ds, grid_size, patch_size, x_i, y_i, x_dim_name, y_dim_name)
+                        patch = self._make_patch(ds, patch_size, x_i, y_i, x_dim_name, y_dim_name)
                         single_dataset_patches.append(patch)
 
                     filtered_balanced_counts[filter_balance_ind] = filtered_balanced_counts[filter_balance_ind] + 1
@@ -774,15 +890,8 @@ class Patcher:
         return patches
     
 
-    def _make_patch(self, file_ds, grid_size, patch_size, x, y, x_dim_name, y_dim_name):
-        halfstep = int(patch_size/2)
-        y_max = grid_size[1]-halfstep
-        x_max = grid_size[0]-halfstep
-
-        patch = None
-
-        if x >= halfstep and x < x_max and y >= halfstep and y < y_max:
-            patch = file_ds[{x_dim_name:slice(x-halfstep,x+halfstep), y_dim_name:slice(y-halfstep,y+halfstep)}]
+    def _make_patch(self, file_ds, patch_size, x, y, x_dim_name, y_dim_name):
+        patch = file_ds[{x_dim_name:slice(x, x+patch_size), y_dim_name:slice(y, y+patch_size)}]
 
         return patch
 
