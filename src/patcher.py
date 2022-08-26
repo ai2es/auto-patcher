@@ -722,10 +722,10 @@ class Patcher:
         for data_settings_cfg in data_settings_cfgs:
             for i, filter in enumerate(data_settings_cfg["Filtration"]["filters"]):
                 all_filters.append(filter)
-                all_thresholds.append(data_settings_cfg[i]["Filtration"]["filter_patch_threshold"])
+                all_thresholds.append(data_settings_cfg["Filtration"]["filter_patch_threshold"][i])
             for i, filter in enumerate(data_settings_cfg["Filtration"]["filters_balanced"]):
                 all_balanced_filters.append(filter)
-                all_balanced_thresholds.append(data_settings_cfg[i]["Filtration"]["filter_patch_threshold_balanced"])
+                all_balanced_thresholds.append(data_settings_cfg["Filtration"]["filter_patch_threshold_balanced"][i])
 
         if len(all_balanced_filters) == 0:
             num_of_filters = 1
@@ -740,6 +740,7 @@ class Patcher:
         else:
             num_master_array_dims_to_concat = 3
 
+        # TODO: Make this return dicts instead of arrays for the keys
         # Creates a broadcasted numpy array of all our data across all dimensions for powerful manipulation
         dataset_master_np_array, var_keys, dim_keys = self._make_master_np_array(reproj_datasets, x_dim_name, y_dim_name, num_master_array_dims_to_concat)
 
@@ -806,7 +807,7 @@ class Patcher:
             vaid_pixels_bool[ds_dims[rejected_pixels[0],0], ds_dims[rejected_pixels[0],1], j] = 0
         
         # TODO: Consider if this legacy code block should be replaced. Calling np.where again unnecessary?
-        for i in range(len(num_of_filters)):
+        for i in range(num_of_filters):
             where_array = np.array(np.where(vaid_pixels_bool[:,:,i] == 1))
             # TODO: Check this np.size if statement with some tests because I don't fully trust it
             if np.size(where_array):
@@ -842,7 +843,7 @@ class Patcher:
 
         # TODO: Implement shuffle here
         # TODO: Implement time stuff here or elsewhere?
-        filtered_balanced_pixels = self._filter_patch_pixels(reproj_datasets,patch_size,x_dim_name,y_dim_name,data_settings_cfgs, patches_per_time, False, False)
+        filtered_balanced_pixels = self._filter_patch_pixels(reproj_datasets,patch_size,x_dim_name,y_dim_name,data_settings_cfgs, patches_per_time, True, False)
         
         for i in range(patches_per_time):
             single_dataset_patches = []
