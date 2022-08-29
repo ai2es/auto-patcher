@@ -35,12 +35,13 @@ class Patcher:
         # config.read(config_path)
         # self.config = cfg_parser(config)
         self.run_num = run_num
-        warnings.simplefilter('once', category=RuntimeWarning)
+        # warnings.simplefilter('once', category=RuntimeWarning)
 
 
     def view_dataset(self, ds_path, lat_dim = None, lon_dim = None):
         try:
-            ds = self._netcdf_loader(ds_path, lat_dim, lon_dim)
+            self.dataset_netcdf_load_modes = np.array([0])
+            ds = self._netcdf_loader(ds_path, 0, lat_dim, lon_dim)
         except:
             raise Exception("File loading failed. If you haven't already try to include the lat and lon dims of the dataset if you know them and try again.")
 
@@ -58,24 +59,34 @@ class Patcher:
 
 
     # TODO: MAJOR: Make exception in here for case where decode_cf=False has to run but the dataset's has_time_cord=True
-    def _netcdf_loader(self, path, lat_dim = None, lon_dim = None):
+    def _netcdf_loader(self, path, dataset_index, lat_dim = None, lon_dim = None):
         need_to_rename_dims = False
-        try: 
-            ds = xr.open_dataset(path, decode_cf=True)
-        except:
+        if self.dataset_netcdf_load_modes[dataset_index] == 1:
+            ds = xr.open_dataset(path, decode_cf=False)
+        elif self.dataset_netcdf_load_modes[dataset_index] == 2:
+            if lat_dim is None or lon_dim is None:
+                raise Exception("This dataset requires that we rename it's dimensions. You must not keep lat_dim and lon_dim as None.")
+            
+            ds = xr.open_dataset(path, decode_cf=False, drop_variables=[lat_dim, lon_dim])
+            need_to_rename_dims = True
+        else:
             try:
-                ds = xr.open_dataset(path, decode_cf=False)
-                # warnings.warn('WARNING: One or more of your selected dataset(s) contains at least one netcdf file that does not follow netcdf convections. Less useful netcdf loader had to be used.', category=RuntimeWarning)
+                ds = xr.open_dataset(path, decode_cf=True)
             except:
+                warnings.warn('WARNING: One or more of your selected dataset(s) contains at least one netcdf file that does not follow netcdf convections. Less useful netcdf loader had to be used.')
                 try:
-                    if lat_dim is None or lon_dim is None:
-                        raise Exception("")
-
-                    ds = xr.open_dataset(path, decode_cf=False, drop_variables=[lat_dim, lon_dim])
-                    need_to_rename_dims = True
-
+                    ds = xr.open_dataset(path, decode_cf=False)
+                    self.dataset_netcdf_load_modes[dataset_index] = 1
                 except:
-                    raise Exception('Unable to load at least one of the netcdf files! Had to kill patcher. Note: This may mean I need a more robust _netcdf_loader method. Talk to Tobias.')
+                    try:
+                        if lat_dim is None or lon_dim is None:
+                            raise Exception("")
+                        
+                        ds = xr.open_dataset(path, decode_cf=False, drop_variables=[lat_dim, lon_dim])
+                        need_to_rename_dims = True
+                        self.dataset_netcdf_load_modes[dataset_index] = 2
+                    except:
+                        raise Exception('Unable to load at least one of the netcdf files! Had to kill patcher. Note: This may mean I need a more robust _netcdf_loader method. Talk to Tobias.')
 
         # This is to deal with case where the new lon/lat coordinates we need to make have the same dimension names. Xarray doesn't like that
         # NOTE: This changes the dims without changing the dataset's y_dim_name or x_dim_name setting in the setting dict
@@ -126,7 +137,7 @@ class Patcher:
                     time_cord_name = data_settings_cfgs[current_index]["Data"]["time_cord_name"]
                     y_dim_name = data_settings_cfgs[current_index]["Data"]["y_dim_name"]
                     x_dim_name = data_settings_cfgs[current_index]["Data"]["x_dim_name"]
-                    ds = self._netcdf_loader(datasets_paths[current_index][chosen_date_indeces[current_index][i]], y_dim_name, x_dim_name)
+                    ds = self._netcdf_loader(datasets_paths[current_index][chosen_date_indeces[current_index][i]], current_index, y_dim_name, x_dim_name)
                     # TODO: This is perhaps an extra loop. Consider if this can be removed later.
                     datetimes_adjusted = []
                     time_indeces_adjusted = np.arange(len(ds[time_cord_name].to_numpy())).tolist()
@@ -183,7 +194,7 @@ class Patcher:
                     if found_files and data_settings_cfgs[current_index]["Data"]["has_time_cord"]:
                         y_dim_name = data_settings_cfgs[current_index]["Data"]["y_dim_name"]
                         x_dim_name = data_settings_cfgs[current_index]["Data"]["x_dim_name"]
-                        ds = self._netcdf_loader(datasets_paths[current_index][chosen_date_indeces[current_index][i]], y_dim_name, x_dim_name)
+                        ds = self._netcdf_loader(datasets_paths[current_index][chosen_date_indeces[current_index][i]], current_index, y_dim_name, x_dim_name)
                         time_cord_name = data_settings_cfgs[current_index]["Data"]["time_cord_name"]
                         for j, current_datetime in enumerate(ds[time_cord_name].to_numpy()):
                             if current_datetime.astype(chosen_resolution) == chosen_datetimes_adjusted[current_index+1]:
@@ -207,7 +218,7 @@ class Patcher:
                     if found_files and data_settings_cfgs[current_index]["Data"]["has_time_cord"]:
                         y_dim_name = data_settings_cfgs[current_index]["Data"]["y_dim_name"]
                         x_dim_name = data_settings_cfgs[current_index]["Data"]["x_dim_name"]
-                        ds = self._netcdf_loader(datasets_paths[current_index][chosen_date_indeces[current_index][i]], y_dim_name, x_dim_name)
+                        ds = self._netcdf_loader(datasets_paths[current_index][chosen_date_indeces[current_index][i]], current_index, y_dim_name, x_dim_name)
                         time_cord_name = data_settings_cfgs[current_index]["Data"]["time_cord_name"]
                         for j, current_datetime in enumerate(ds[time_cord_name].to_numpy()):
                             if current_datetime.astype(chosen_resolution) == chosen_datetimes_adjusted[current_index-1]:
@@ -239,6 +250,8 @@ class Patcher:
         patches_per_time = settings_dict["Patches"]["patches_per_unit_time"]
         chosen_resolution = settings_dict["Patches"]["chosen_resolution"]
         self.dataset_names = settings_dict["Input_Data"]["dataset_names"]
+        n_parallel_runs = settings_dict["Patches"]["n_parallel_runs"]
+        self.shuffle_patches_in_each_timestep = settings_dict["Patches"]["shuffle_patches_in_each_timestep"]
         if settings_dict["Patches"]["max_times_num_per_file"] is None: # NOTE: This is for the number of specific times alowed to be extraced from one set of files. NOT NUMBER OF PATCHES ALLOWED PER FILE
             max_times_num_per_file = np.inf
         else:
@@ -249,6 +262,8 @@ class Patcher:
             config = configparser.ConfigParser()
             config.read(data_settings_cfg)
             data_settings_cfgs.append(cfg_parser(config))
+
+        self.dataset_netcdf_load_modes = np.zeros(len(data_settings_cfgs))
 
         # TODO: Maybe put the following loop into its own method?
         datasets_paths = []
@@ -293,6 +308,13 @@ class Patcher:
         datasets_date_resolutions = datasets_date_resolutions[inds]
         datasets_date_resolution_vals = datasets_date_resolution_vals[inds]
         data_settings_cfgs = data_settings_cfgs[inds]
+
+        # If doing parallel runs on supercomputer, split our data across the runs so there is no double sampling of patches
+        if n_parallel_runs is not None:
+            datasets_paths_split = np.array_split(datasets_paths[-1], n_parallel_runs)
+            datasets_datetimes_split = np.array_split(datasets_datetimes[-1], n_parallel_runs)
+            datasets_paths[-1] = datasets_paths_split[self.run_num]
+            datasets_datetimes[-1] = datasets_datetimes_split[self.run_num]
 
         # Have numpy datetime64 objects with dates adjusted for the lowest resolution we have ready for all datasets
         # TODO: Double check this idea by considering it once more
@@ -472,7 +494,7 @@ class Patcher:
                 if data_per_file_counter == 0:
                     y_dim_name = data_settings_cfgs[0]["Data"]["y_dim_name"]
                     x_dim_name = data_settings_cfgs[0]["Data"]["x_dim_name"]
-                    ds = self._netcdf_loader(datasets_paths[0][date_indeces[date_counter]], y_dim_name, x_dim_name)
+                    ds = self._netcdf_loader(datasets_paths[0][date_indeces[date_counter]], 0, y_dim_name, x_dim_name)
                     time_cord_name = data_settings_cfgs[0]["Data"]["time_cord_name"]
                     current_datetime = ds[time_cord_name]
                     ds.close()
@@ -559,7 +581,7 @@ class Patcher:
             
             y_dim_name = data_settings_cfgs[i]["Data"]["y_dim_name"]
             x_dim_name = data_settings_cfgs[i]["Data"]["x_dim_name"]
-            ds = self._netcdf_loader(path, y_dim_name, x_dim_name)
+            ds = self._netcdf_loader(path, i, y_dim_name, x_dim_name)
             nc_ds = nc.Dataset(path)
             lats = nc_ds[data_settings_cfgs[i]["Data"]["lat_cord_name"]][:]
             lons = nc_ds[data_settings_cfgs[i]["Data"]["lon_cord_name"]][:]
@@ -625,28 +647,34 @@ class Patcher:
     def _reproject_datasets(self, loaded_datasets, reproj_ds_index, data_settings_cfgs):
         reproj_datasets = []
         dataset_empty_or_out_of_range = False
-        reproj_target_ds = copy.deepcopy(loaded_datasets[reproj_ds_index])
+        reproj_target_ds = loaded_datasets[reproj_ds_index]
 
         for i, ds in enumerate(loaded_datasets):
-            # TODO: Maybe make the regridder algorithm a config setting?
-            # TODO: Consider if reuse_weights:bool is useful here
-            regridder = xe.Regridder(ds, reproj_target_ds, "bilinear", unmapped_to_nan=True)
-            ds_reproj = regridder(ds)
-            for key_name in ds_reproj.keys():
-                data_var = ds_reproj[key_name].to_numpy()
-                if np.isnan(data_var).all():
-                    dataset_empty_or_out_of_range = True
-                    break
+            if data_settings_cfgs[i]["Data"]["needs_reproj"]:
+                if data_settings_cfgs[i]["Data"]["reproj_target"]:
+                    raise Exception('Cannot set both "needs_reproj" and "reproj_target" to True at the same time. You cannot reproject a dataset onto itself!')
 
-            if dataset_empty_or_out_of_range:
-                break
+                # TODO: Maybe make the regridder algorithm a config setting?
+                # TODO: Consider if reuse_weights:bool is useful here
+                regridder = xe.Regridder(ds, reproj_target_ds, "bilinear", unmapped_to_nan=True)
+                ds_reproj = regridder(ds)
+                for key_name in ds_reproj.keys():
+                    data_var = ds_reproj[key_name].to_numpy()
+                    if np.isnan(data_var).all():
+                        dataset_empty_or_out_of_range = True
+                        break
+
+                if dataset_empty_or_out_of_range:
+                    break
+            else:
+                ds_reproj = ds
 
             ds_reproj = self._add_custom_vars(ds_reproj, data_settings_cfgs, i, True)
 
             reproj_datasets.append(ds_reproj)
-            ds.close()
-        
-        reproj_target_ds.close()
+
+            if data_settings_cfgs[i]["Data"]["needs_reproj"]:
+                ds.close()
 
         return reproj_datasets, dataset_empty_or_out_of_range
 
@@ -843,7 +871,7 @@ class Patcher:
 
         # TODO: Implement shuffle here
         # TODO: Implement time stuff here or elsewhere?
-        filtered_balanced_pixels = self._filter_patch_pixels(reproj_datasets,patch_size,x_dim_name,y_dim_name,data_settings_cfgs, patches_per_time, True, False)
+        filtered_balanced_pixels = self._filter_patch_pixels(reproj_datasets,patch_size,x_dim_name,y_dim_name,data_settings_cfgs, patches_per_time, self.shuffle_patches_in_each_timestep, False)
         
         for i in range(patches_per_time):
             single_dataset_patches = []
@@ -866,6 +894,8 @@ class Patcher:
 
         if np.sum(pixel_counters) < patches_per_time:
             warnings.warn("While generating patches for a single timestep, the function _make_patches ran out of possible patches that meet the set filters' requirements. Continuing search...")
+
+        print("Accepted Patches: " + str(pixel_counters))
 
         for ds in reproj_datasets:
             ds.close()
