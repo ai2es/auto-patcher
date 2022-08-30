@@ -24,10 +24,6 @@ from operator import itemgetter
 # NOTE: Spatial dataset delineation in file/path naming not currently supported.
 
 
-# TODO: Make documentation on how data directories should be organized. (Data downloader should make them this way)
-#       They should be made such that the full date (but not necessarily the hour) is always either a directory 
-#       (or a set of directories) somewhere in each file's path and/or be included in the name of each file.
-#       It should note that it will fail if those .idx files are in the label/feature directories. Only expected files should be in there.
 class Patcher:
     def __init__(self, run_num):
         # # Parse in config file specified by config_path. See examples given in repo
@@ -252,7 +248,8 @@ class Patcher:
         self.dataset_names = settings_dict["Input_Data"]["dataset_names"]
         n_parallel_runs = settings_dict["Patches"]["n_parallel_runs"]
         self.shuffle_patches_in_each_timestep = settings_dict["Patches"]["shuffle_patches_in_each_timestep"]
-        if settings_dict["Patches"]["max_times_num_per_file"] is None: # NOTE: This is for the number of specific times alowed to be extraced from one set of files. NOT NUMBER OF PATCHES ALLOWED PER FILE
+
+        if settings_dict["Patches"]["max_times_num_per_file"] is None: # NOTE: This is for the number of specific times allowed to be extraced from one set of files. NOT NUMBER OF PATCHES ALLOWED PER FILE
             max_times_num_per_file = np.inf
         else:
             max_times_num_per_file = settings_dict["Patches"]["max_times_num_per_file"]
@@ -265,6 +262,9 @@ class Patcher:
 
         self.dataset_netcdf_load_modes = np.zeros(len(data_settings_cfgs))
 
+        data_start = settings_dict["Input_Data"]["data_start"]
+        data_end = settings_dict["Input_Data"]["data_end"]
+
         # TODO: Maybe put the following loop into its own method?
         datasets_paths = []
         datasets_datetimes = []
@@ -272,6 +272,17 @@ class Patcher:
         datasets_date_resolution_vals = []
         filtered_balanced_counts = []
         for data_settings_cfg in data_settings_cfgs:
+            data_start_for_one_ds = copy.deepcopy(data_start)
+            data_end_for_one_ds = copy.deepcopy(data_end)
+            if data_settings_cfg["Bounds"]["data_start"] is not None:
+                data_start_for_one_ds = data_settings_cfg["Bounds"]["data_start"]
+            if data_settings_cfg["Bounds"]["data_end"] is not None:
+                data_end_for_one_ds = data_settings_cfg["Bounds"]["data_end"]
+            
+            if data_start_for_one_ds is None and data_end_for_one_ds is None:
+                raise Exception("You must give at least some data bounds in either the top config or in the dataset configs.")
+
+
             file_list = self.create_file_list(data_settings_cfg["Path"]["root_dir"], 
                                               data_settings_cfg["Path"]["path_glob"], 
                                               data_settings_cfg["Path"]["path_reg"])
@@ -281,8 +292,11 @@ class Patcher:
                                                                                                                        data_settings_cfg["Path"]["dt_regs"],
                                                                                                                        data_settings_cfg["Path"]["dt_formats"])
 
-            file_list, dateset_datetimes = self.select_data_range(file_list, data_settings_cfg["Bounds"]["data_start"], data_settings_cfg["Bounds"]["data_end"],
+            file_list, dateset_datetimes = self.select_data_range(file_list, data_start_for_one_ds, data_end_for_one_ds,
                                                                   data_settings_cfg["Bounds"]["use_date_for_data_range"], dateset_datetimes, dataset_date_resolution)
+
+            if len(file_list) == 0:
+                raise Exception('No files found under given "data_start" and "data_end" settings for at least one dataset, despite files being found given your glob and regex settings. If using dates, maybe they are incorrect?')
 
             datasets_paths.append(file_list)
             datasets_datetimes.append(dateset_datetimes)
@@ -311,10 +325,10 @@ class Patcher:
 
         # If doing parallel runs on supercomputer, split our data across the runs so there is no double sampling of patches
         if n_parallel_runs is not None:
-            datasets_paths_split = np.array_split(datasets_paths[-1], n_parallel_runs)
-            datasets_datetimes_split = np.array_split(datasets_datetimes[-1], n_parallel_runs)
-            datasets_paths[-1] = datasets_paths_split[self.run_num]
-            datasets_datetimes[-1] = datasets_datetimes_split[self.run_num]
+            datasets_paths_split = np.array_split(np.array(datasets_paths[-1]), n_parallel_runs)
+            datasets_datetimes_split = np.array_split(np.array(datasets_datetimes[-1]), n_parallel_runs)
+            datasets_paths[-1] = datasets_paths_split[self.run_num].tolist()
+            datasets_datetimes[-1] = datasets_datetimes_split[self.run_num].tolist()
 
         # Have numpy datetime64 objects with dates adjusted for the lowest resolution we have ready for all datasets
         # TODO: Double check this idea by considering it once more
@@ -433,7 +447,6 @@ class Patcher:
 
     def _find_indeces_of_matching_datasets(self, index_dict, flags_dict, counters_dict, lowest_resolution_dates, all_found_datetimes_adjusted, all_found_time_indeces_adjusted,
                                            datasets_datetimes, data_settings_cfgs, datasets_paths, chosen_resolution, max_times_num_per_file):
-        # TODO: Turn the packing and unpacking of these dicts into methods (including outside this method)
         chosen_date_indeces = index_dict["chosen_date_indeces"]
         date_indeces = index_dict["date_indeces"]
         time_indeces = index_dict["time_indeces"]
@@ -607,17 +620,6 @@ class Patcher:
                 y_dim_name = "lat_dim"
             else:
                 y_dim_name = data_settings_cfgs[i]["Data"]["y_dim_name"]
-
-            # if data_settings_cfgs[i]["Data"]["x_dim_name"] == "lon":
-            #     ds = ds.rename_dims({"lon":"lon_dim"})
-            #     x_dim_name = "lon_dim"
-            # else:
-            #     x_dim_name = data_settings_cfgs[i]["Data"]["x_dim_name"]
-            # if data_settings_cfgs[i]["Data"]["y_dim_name"] == "lat":
-            #     ds = ds.rename_dims({"lat":"lat_dim"})
-            #     y_dim_name = "lat_dim"
-            # else:
-            #     y_dim_name = data_settings_cfgs[i]["Data"]["y_dim_name"]
 
             # Select only the data we want
             ds = ds[data_settings_cfgs[i]["Data"]["selected_vars"]]
@@ -869,7 +871,6 @@ class Patcher:
         all_patches = []
         pixel_counters = np.zeros(len(filtered_balanced_counts), dtype=np.int64)
 
-        # TODO: Implement shuffle here
         # TODO: Implement time stuff here or elsewhere?
         filtered_balanced_pixels = self._filter_patch_pixels(reproj_datasets,patch_size,x_dim_name,y_dim_name,data_settings_cfgs, patches_per_time, self.shuffle_patches_in_each_timestep, False)
         
@@ -936,6 +937,7 @@ class Patcher:
             new_list.append(np_datetime)
         return new_list
 
+
     # Three possible options:
     # 1. use dates to set range
     # 2. use hard indeces to set range
@@ -945,8 +947,7 @@ class Patcher:
     def select_data_range(self, file_list, data_start, data_end, use_date=False, dates_list=None, dataset_date_resolution=None):
         file_list = np.array(file_list)
 
-        # If date is used for selecting files, this assumes that the dates are included and are not None TODO: Make error check for this?
-        # (Just throw exception inside if statement below that checks if dates_list is none)
+        # If date is used for selecting files, this assumes that the dates are included and are not None
         if use_date:
             if data_start is not None:
                 start_date = np.datetime64(data_start).astype(dataset_date_resolution)
@@ -977,12 +978,18 @@ class Patcher:
                     start_index = data_start
                 elif isinstance(data_start, float):
                     start_index = int(data_start*len(file_list))
+                elif isinstance(data_start, str):
+                    start_index = np.where(file_list == data_start)[0][0]
+                    end_index = start_index + 1
 
             if data_end is not None:
                 if isinstance(data_end, int):
                     end_index = data_end
                 elif isinstance(data_end, float):
                     end_index = int(data_end*len(file_list))
+                elif isinstance(data_end, str):
+                    start_index = np.where(file_list == data_end)[0][0]
+                    end_index = start_index + 1
         
             if dates_list is not None:
                 dates_list = np.array(dates_list)
@@ -1078,18 +1085,16 @@ class Patcher:
 
             datetimes.append(datetime_np)
 
+        if len(datetimes) == 0:
+            raise Exception('Failed to extract datetime values using "dt_positions", "dt_regs", and "dt_formats" for at least one dataset. Probably have a mistake in your regular expressions.')
+
         return datetimes, dataset_date_resolution, dataset_date_resolution_val
-
-
-    # TODO: May not need this in a function anymore???
-    def _glob_path_maker(self, root_path, glob_string):
-        return root_path.rstrip("/") + "/" + glob_string.lstrip("/")
 
 
     # NOTE: In path_glob only include wild card operators for each directory level you want to search across.
     #       The regex can handle any filtering.
     def create_file_list(self, root_dir, path_glob, path_regex):
-        glob_path = self._glob_path_maker(root_dir, path_glob)
+        glob_path = root_dir.rstrip("/") + "/" + path_glob.lstrip("/")
         unfiltered_file_list = glob.glob(glob_path)
 
         file_list = []
@@ -1107,7 +1112,9 @@ class Patcher:
             if np.all(np.array(reg_bools)):
                 file_list.append(file)
 
-        # TODO: Make the program crash if file_list stays empty. (ALSO DO THIS IN THE TIME CHECKING FUNCTIONS TOO)
+        if len(file_list) == 0:
+            raise Exception('File loading issue with at least one dataset! Either the wildcards in "path_glob" are in the wrong positions in one of the dataset configs or perhaps the disk you are trying to access is no longer mounted!')
+        
         file_list.sort()
         return file_list
 
@@ -1179,5 +1186,3 @@ if __name__ == "__main__":
     config.read(args.config_path)
     config = cfg_parser(config)
     patcher.run(config)
-
-# TODO: REMINDER: WoFS file and data names change all the time. Look out for this!
