@@ -248,6 +248,7 @@ class Patcher:
         self.dataset_names = settings_dict["Input_Data"]["dataset_names"]
         n_parallel_runs = settings_dict["Patches"]["n_parallel_runs"]
         self.shuffle_patches_in_each_timestep = settings_dict["Patches"]["shuffle_patches_in_each_timestep"]
+        self.ignore_nans = settings_dict["Patches"]["ignore_nans"]
 
         if settings_dict["Patches"]["max_times_num_per_file"] is None: # NOTE: This is for the number of specific times allowed to be extraced from one set of files. NOT NUMBER OF PATCHES ALLOWED PER FILE
             max_times_num_per_file = np.inf
@@ -814,9 +815,10 @@ class Patcher:
         vaid_pixels_bool[ds_dims[:,0], ds_dims[:,1], :] = 1
 
         # Mark for removal any patches that contain any nans anywhere and in any dimension
-        indeces_of_nans = np.isnan(dataset_master_np_array)
-        indeces_of_nan_test_failure = np.nonzero(np.any(indeces_of_nans, axis=tuple(np.arange(1,len(dataset_master_np_array.shape)))))
-        vaid_pixels_bool[ds_dims[indeces_of_nan_test_failure[0],0], ds_dims[indeces_of_nan_test_failure[0],1], :] = 0
+        if not self.ignore_nans:
+            indeces_of_nans = np.isnan(dataset_master_np_array)
+            indeces_of_nan_test_failure = np.nonzero(np.any(indeces_of_nans, axis=tuple(np.arange(1,len(dataset_master_np_array.shape)))))
+            vaid_pixels_bool[ds_dims[indeces_of_nan_test_failure[0],0], ds_dims[indeces_of_nan_test_failure[0],1], :] = 0
 
         # Mark for removal any patches that fail our broad filters
         for j, filter in enumerate(all_filters):
