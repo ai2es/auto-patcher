@@ -275,9 +275,8 @@ class Patcher:
         for data_settings_cfg in data_settings_cfgs:
             data_start_for_one_ds = copy.deepcopy(data_start)
             data_end_for_one_ds = copy.deepcopy(data_end)
-            if data_settings_cfg["Bounds"]["data_start"] is not None:
+            if data_settings_cfg["Bounds"]["data_start"] is not None or data_settings_cfg["Bounds"]["data_end"] is not None:
                 data_start_for_one_ds = data_settings_cfg["Bounds"]["data_start"]
-            if data_settings_cfg["Bounds"]["data_end"] is not None:
                 data_end_for_one_ds = data_settings_cfg["Bounds"]["data_end"]
             
             if data_start_for_one_ds is None and data_end_for_one_ds is None:
