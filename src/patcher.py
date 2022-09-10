@@ -100,6 +100,8 @@ class Patcher:
 
 
     # NOTE: Only works in multi-dateset case. Not to be used for 1 dataset case.
+    # NOTE: This is designed to find index sets for a collection of files already partially matched (with the lowest time resolution) before it is given as input.
+    # This is what chosen_date_indeces is for. The indeces that are found in this function correspond to this variable NOT the top level dataset file list <----- Important to understand!
     def _compare_datetimes_with_IO(self, current_index, chosen_date_indeces, all_datetimes,
                                          data_settings_cfgs, datasets_paths, chosen_resolution, 
                                          solution_indeces_files=None, solution_indeces_times=None, 
@@ -173,7 +175,7 @@ class Patcher:
                                                                                                                                                         all_found_datetimes_adjusted, all_found_time_indeces_adjusted)
 
                     if found_files:
-                        solution_indeces_times[current_index] = all_found_time_indeces_adjusted[current_index][chosen_date_indeces[current_index][i]][j]
+                        solution_indeces_times[current_index] = j
                         break
 
             else:
@@ -309,8 +311,14 @@ class Patcher:
             filtered_balanced_counts = [0]
 
         # Set top level lists to numpy arrays for more functionality
-        datasets_paths = np.array(datasets_paths, dtype=list)
-        datasets_datetimes = np.array(datasets_datetimes, dtype=list)
+        # The following 7 lines have to be done in this way to avoid default numpy behaviour
+        datasets_paths_np = np.empty(len(datasets_paths), dtype=object)
+        datasets_datetimes_np = np.empty(len(datasets_datetimes), dtype=object)
+        for i, (dataset_paths, dataset_datetimes) in enumerate(zip(datasets_paths, datasets_datetimes)):
+            datasets_paths_np[i] = dataset_paths
+            datasets_datetimes_np[i] = dataset_datetimes
+        datasets_paths = datasets_paths_np
+        datasets_datetimes = datasets_datetimes_np
         datasets_date_resolutions = np.array(datasets_date_resolutions)
         datasets_date_resolution_vals = np.array(datasets_date_resolution_vals)
         data_settings_cfgs = np.array(data_settings_cfgs)
@@ -323,12 +331,17 @@ class Patcher:
         datasets_date_resolution_vals = datasets_date_resolution_vals[inds]
         data_settings_cfgs = data_settings_cfgs[inds]
 
+        file_counts = [len(ds_paths) for ds_paths in datasets_paths]
+        print('Number of files found: ' + str(file_counts))
+
         # If doing parallel runs on supercomputer, split our data across the runs so there is no double sampling of patches
         if n_parallel_runs is not None:
             datasets_paths_split = np.array_split(np.array(datasets_paths[-1]), n_parallel_runs)
             datasets_datetimes_split = np.array_split(np.array(datasets_datetimes[-1]), n_parallel_runs)
-            datasets_paths[-1] = datasets_paths_split[self.run_num].tolist()
-            datasets_datetimes[-1] = datasets_datetimes_split[self.run_num].tolist()
+            datasets_paths[-1] = list(datasets_paths_split[self.run_num])
+            datasets_datetimes[-1] = list(datasets_datetimes_split[self.run_num])
+
+            print("Last (rightmost) dataset's file count after split: " + str(len(datasets_datetimes[-1])))
 
         # Have numpy datetime64 objects with dates adjusted for the lowest resolution we have ready for all datasets
         # TODO: Double check this idea by considering it once more
@@ -347,7 +360,7 @@ class Patcher:
         found_files = False
         solution_indeces_files = None
         solution_indeces_times = None
-        date_indeces = np.random.choice(np.arange(0,len(datasets_paths[-1])), size=len(datasets_paths[-1]), replace=False)
+        date_indeces = np.random.choice(np.arange(0,len(datasets_paths[0])), size=len(datasets_paths[0]), replace=False)
         time_indeces = None
         chosen_date_indeces = []
         for i in range(len(datasets_paths)):
@@ -367,6 +380,7 @@ class Patcher:
         label_patches = None
 
         while np.any(np.array(filtered_balanced_counts) < number_of_patches_per_balanced_var):
+            print("---------------------------------------------")
             if main_loop_counter % 5 == 0:
                 print("Reached search number: " + str(main_loop_counter))
 
@@ -385,6 +399,12 @@ class Patcher:
                           "time_indeces": time_indeces,
                           "chosen_date_indeces": chosen_date_indeces}
 
+            # TODO: When implementing the better system for all these indeces and counters that exploits .self, make sure to
+            # COMPLETELY change how we approach "chosen_date_indeces" (dataset_count X number_of_CHOSEN_files) and "all_found_time_indeces_adjusted"
+            # (dataset_count X number_of_CHOSEN_files X number_of_timesteps). These confusing lists handle the mapping from the recursion counters 
+            # to their indeces inside the original file list and time list inside an xarray dataset respectively. Possible solutions are: 
+            # to rename them to something smarter, include way more documentation on them, remove them entirely and think of something different.
+            # These lists already caused at least one major bug that broke everything so something should probably be done.
             ran_out_of_files, index_dict, flags_dict, counters_dict, all_found_datetimes_adjusted, all_found_time_indeces_adjusted = self._find_indeces_of_matching_datasets(index_dict, flags_dict, 
                                                                                               counters_dict, lowest_resolution_dates, all_found_datetimes_adjusted, all_found_time_indeces_adjusted, 
                                                                                               datasets_datetimes, data_settings_cfgs, datasets_paths, chosen_resolution, max_times_num_per_file)
@@ -403,9 +423,21 @@ class Patcher:
             date_counter = counters_dict["date_counter"]
             data_per_file_counter = counters_dict["data_per_file_counter"]
 
-            loaded_datasets, reproj_ds_index = self._load_datasets_from_disk(chosen_date_indeces, solution_indeces_files, solution_indeces_times, datasets_paths, data_settings_cfgs)
+            loaded_datasets, reproj_ds_index, datetimes_loaded_from_disk = self._load_datasets_from_disk(chosen_date_indeces, all_found_time_indeces_adjusted, solution_indeces_files, solution_indeces_times, datasets_paths, data_settings_cfgs)
 
             reproj_datasets, dataset_empty_or_out_of_range = self._reproject_datasets(loaded_datasets, reproj_ds_index, data_settings_cfgs)
+
+            # Print to stdout information about this search
+            print("Files that were used:")
+            print([datasets_path[chosen_date_indeces[i][solution_indeces_files[i]]] for i, datasets_path in enumerate(datasets_paths)])
+            print("Time(s) that were used:")
+            selected_datetimes = []
+            for i, dataset_datetimes in enumerate(datasets_datetimes):
+                if data_settings_cfgs[i]["Data"]["has_time_cord"]:
+                    selected_datetimes.append(np.datetime64(datetimes_loaded_from_disk.pop(0).astype(chosen_resolution).item()))
+                else:
+                    selected_datetimes.append(dataset_datetimes[chosen_date_indeces[i][solution_indeces_files[i]]])
+            print(selected_datetimes)
 
             # Increment index system for loop around (only relevant for multi-dataset case)
             if data_settings_cfgs[-1]["Data"]["use_internal_times_when_finding_files"]:
@@ -419,7 +451,17 @@ class Patcher:
                 warnings.warn('WARNING: At least one of the selected dataset files contained data that was entirely missing or data that did not spatially align with the other datasets. Continuing search...')
                 continue
 
+            patch_count_last_search = np.sum(filtered_balanced_counts)
+
             all_patches, filtered_balanced_counts = self._make_patches(reproj_datasets, data_settings_cfgs, patches_per_time, patch_size, reproj_ds_index, filtered_balanced_counts, number_of_patches_per_balanced_var)
+
+            # Print the indices in n_samples for the patches added in this search
+            patch_count_this_search = np.sum(filtered_balanced_counts)
+            if patch_count_this_search - patch_count_last_search == 0:
+                indices_str = "NONE"
+            else:
+                indices_str = str(np.arange(patch_count_last_search, patch_count_this_search).tolist())
+            print("Indices of patches added in this search: " + indices_str)
 
             for single_dataset_patches in all_patches:
                 label_patch = None
@@ -431,6 +473,8 @@ class Patcher:
                         feature_patch = self._merge_patches(feature_patch, patch)
                 label_patches = self._concat_patches(label_patches, label_patch)
                 feature_patches = self._concat_patches(feature_patches, feature_patch)
+
+            print("---------------------------------------------")
 
         if feature_patches is not None:
             feature_patch_path = os.path.join(feature_patches_root, str(self.run_num) + ".nc")
@@ -467,7 +511,7 @@ class Patcher:
                     for i, dataset_datetimes in enumerate(lowest_resolution_dates):
 
                         dataset_datetimes = np.array(dataset_datetimes)
-                        ordered_indeces = np.where(dataset_datetimes == lowest_resolution_dates[-1][date_indeces[date_counter]])[0]
+                        ordered_indeces = np.where(dataset_datetimes == lowest_resolution_dates[0][date_indeces[date_counter]])[0]
                         random.shuffle(ordered_indeces)
                         chosen_date_indeces[i] = ordered_indeces
 
@@ -491,6 +535,16 @@ class Patcher:
                     load_new_files = True
                 else:
                     data_per_file_counter = data_per_file_counter + 1
+            
+            index_dict["chosen_date_indeces"] = chosen_date_indeces
+            index_dict["date_indeces"] = date_indeces
+            index_dict["time_indeces"] = time_indeces
+            index_dict["solution_indeces_files"] = solution_indeces_files
+            index_dict["solution_indeces_times"] = solution_indeces_times
+            flags_dict["load_new_files"] = load_new_files
+            flags_dict["found_files"] = found_files
+            counters_dict["date_counter"] = date_counter
+            counters_dict["data_per_file_counter"] = data_per_file_counter
 
             if date_counter == len(date_indeces) and load_new_files:
                 return True, index_dict, flags_dict, counters_dict, all_found_datetimes_adjusted, all_found_time_indeces_adjusted
@@ -583,9 +637,10 @@ class Patcher:
         return ds
 
     
-    def _load_datasets_from_disk(self, chosen_date_indeces, solution_indeces_files, solution_indeces_times, datasets_paths, data_settings_cfgs):
+    def _load_datasets_from_disk(self, chosen_date_indeces, all_found_time_indeces_adjusted, solution_indeces_files, solution_indeces_times, datasets_paths, data_settings_cfgs):
         loaded_datasets = []
         reproj_ds_index = -1
+        datetimes_loaded_from_disk = []
         for i, (file_index, time_index) in enumerate(zip(solution_indeces_files, solution_indeces_times)):
             if len(chosen_date_indeces) == 1:
                 path = datasets_paths[i][file_index]
@@ -602,7 +657,8 @@ class Patcher:
 
             if data_settings_cfgs[i]["Data"]["has_time_cord"]:
                 time_dim_name = data_settings_cfgs[i]["Data"]["time_dim_name"]
-                ds = ds[{time_dim_name: time_index}]
+                datetimes_loaded_from_disk.append(ds[time_dim_name][all_found_time_indeces_adjusted[i][chosen_date_indeces[i][file_index]][time_index]].to_numpy())
+                ds = ds[{time_dim_name: all_found_time_indeces_adjusted[i][chosen_date_indeces[i][file_index]][time_index]}] # TODO: the all_found_time_indeces_adjusted here should probably be changed/tested further
 
             if len(lons.shape) == 1:
                 lons, lats = np.meshgrid(lons, lats)
@@ -643,7 +699,7 @@ class Patcher:
         if reproj_ds_index == -1:
             raise Exception("No dataset has been designated as the reproj_target. You must designate exactly one as this. Even if only loading one dataset.")
 
-        return loaded_datasets, reproj_ds_index
+        return loaded_datasets, reproj_ds_index, datetimes_loaded_from_disk
 
 
     def _reproject_datasets(self, loaded_datasets, reproj_ds_index, data_settings_cfgs):
