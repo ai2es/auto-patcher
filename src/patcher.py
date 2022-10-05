@@ -368,6 +368,8 @@ class Patcher:
         date_counter = 0
         data_per_file_counter = 0
         main_loop_counter = 0
+        self.dim_selection_count = 0 # TODO: THIS IS TEMP. REPLACE WITH NEW PIPELINE-WIDE MASTER DATASET METHOD
+        self.all_dim_len = None # TODO: ALSO TEMP (SAME AS ABOVE)
         # Setup solution_indeces_files and solution_indeces_times for case where we only are loading one dataset
         if len(chosen_date_indeces) == 1:
             solution_indeces_files = date_indeces
@@ -440,12 +442,19 @@ class Patcher:
             print(selected_datetimes)
 
             # Increment index system for loop around (only relevant for multi-dataset case)
-            if data_settings_cfgs[-1]["Data"]["use_internal_times_when_finding_files"]:
-                solution_indeces_times[-1] = solution_indeces_times[-1] + 1
+            # TODO: FIRST IF-ELSE IS TEMP
+            self.dim_selection_count = self.dim_selection_count + 1
+            if self.all_dim_len is not None and self.dim_selection_count < self.all_dim_len:
+                load_new_files = False
             else:
-                solution_indeces_files[-1] = solution_indeces_files[-1] + 1
-            if data_per_file_counter == max_times_num_per_file:
-                load_new_files = True
+                self.dim_selection_count = 0
+            ####### END TEMP ##############################
+                if data_settings_cfgs[-1]["Data"]["use_internal_times_when_finding_files"]:
+                    solution_indeces_times[-1] = solution_indeces_times[-1] + 1
+                else:
+                    solution_indeces_files[-1] = solution_indeces_files[-1] + 1
+                if data_per_file_counter == max_times_num_per_file:
+                    load_new_files = True
 
             if dataset_empty_or_out_of_range:
                 warnings.warn('WARNING: At least one of the selected dataset files contained data that was entirely missing or data that did not spatially align with the other datasets. Continuing search...')
@@ -477,11 +486,14 @@ class Patcher:
             print("---------------------------------------------")
 
         if feature_patches is not None:
-            feature_patch_path = os.path.join(feature_patches_root, str(self.run_num) + ".nc")
+            feature_patch_path = os.path.join(feature_patches_root, "{:04d}".format(self.run_num) + ".nc")
+            # TODO: Remove 2 .arrts lines below when adding new system for "merge at beggining"
+            feature_patches.attrs = {}
             feature_patches.to_netcdf(feature_patch_path)
         
         if label_patches is not None:
-            label_patch_path = os.path.join(label_patches_root, str(self.run_num) + ".nc")
+            label_patch_path = os.path.join(label_patches_root, "{:04d}".format(self.run_num) + ".nc")
+            label_patches.attrs = {}
             label_patches.to_netcdf(label_patch_path)
 
         print("Completed on search number: " + str(main_loop_counter))
@@ -631,6 +643,10 @@ class Patcher:
             elif dim_selection_index == "*":
                 random_index = random.randint(0,len(ds[dim_selection_name].to_numpy())-1)
                 ds = ds[{dim_selection_name: random_index}]
+            # TODO: THIS ELIF TEMP
+            elif dim_selection_index == "all":
+                self.all_dim_len = ds.dims[dim_selection_name]
+                ds = ds[{dim_selection_name: self.dim_selection_count}]
             else:
                 raise Exception('Invalid input received for dim_selection_index setting. Must be int or "*".')
         
@@ -754,49 +770,50 @@ class Patcher:
     # Use numpy broadcasting (memory efficient) to create one large numpy out of all datasets.
     # Used for run efficient mass modifications and filters on all patches. (FAR more effective than loops)
     def _make_master_np_array(self, reproj_datasets, x_dim_name, y_dim_name, num_dims_to_concat=3):
-        reproj_dataarrays_broadcasted = []
-        new_array_shape = ()
-        new_np_array_dim_keys = ()
-        data_arrays_dim_mappings = []
-        all_new_keys = [] # Dimension keys in final broadcasted form
-        reproj_dataarrays = []
-        all_keys = [] # This is dimension keys, not var keys
-        all_var_keys = [] # This is var keys
-        dataset_names = self.dataset_names
+        # reproj_dataarrays_broadcasted = []
+        # new_array_shape = ()
+        # new_np_array_dim_keys = ()
+        # data_arrays_dim_mappings = []
+        # all_new_keys = [] # Dimension keys in final broadcasted form
+        # reproj_dataarrays = []
+        # all_keys = [] # This is dimension keys, not var keys
+        # all_var_keys = [] # This is var keys
+        # dataset_names = self.dataset_names
 
-        for i, ds in enumerate(reproj_datasets):
-            da = ds.to_array()
-            all_keys.append(list(ds.dims))
-            if num_dims_to_concat == 4:
-                da = da.transpose("variable", x_dim_name, y_dim_name, "time_dim", ...)
-            else:
-                da = da.transpose("variable", x_dim_name, y_dim_name, ...)
+        # for i, ds in enumerate(reproj_datasets):
+        #     da = ds.to_array()
+        #     all_keys.append(list(ds.dims))
+        #     if num_dims_to_concat == 4:
+        #         da = da.transpose("variable", x_dim_name, y_dim_name, "time_dim", ...)
+        #     else:
+        #         da = da.transpose("variable", x_dim_name, y_dim_name, ...)
 
-            reproj_dataarrays.append(da)
-            all_var_keys.append(list(ds.keys()))
+        #     reproj_dataarrays.append(da)
+        #     all_var_keys.append(list(ds.keys()))
 
-        all_var_keys = np.concatenate(all_var_keys, axis=0)
+        # all_var_keys = np.concatenate(all_var_keys, axis=0)
 
-        for j, reproj_dataarray in enumerate(reproj_dataarrays):
-            new_keys = [dataset_names[j]+"_"+key for key in all_keys[j][num_dims_to_concat:]]
-            dim_mapping = {key:ind+num_dims_to_concat for ind, key in enumerate(new_keys)}
-            data_arrays_dim_mappings.append(dim_mapping)
-            all_new_keys.append(new_keys)
-            new_array_shape = new_array_shape + reproj_dataarray.shape[num_dims_to_concat:]
-            new_np_array_dim_keys = new_np_array_dim_keys + tuple(dim_mapping.keys())
+        # for j, reproj_dataarray in enumerate(reproj_dataarrays):
+        #     new_keys = [dataset_names[j]+"_"+key for key in all_keys[j][num_dims_to_concat:]]
+        #     dim_mapping = {key:ind+num_dims_to_concat for ind, key in enumerate(new_keys)}
+        #     data_arrays_dim_mappings.append(dim_mapping)
+        #     all_new_keys.append(new_keys)
+        #     new_array_shape = new_array_shape + reproj_dataarray.shape[num_dims_to_concat:]
+        #     new_np_array_dim_keys = new_np_array_dim_keys + tuple(dim_mapping.keys())
 
-        new_np_array_dim_mappings = {key:ind+num_dims_to_concat for ind, key in enumerate(new_np_array_dim_keys)}
+        # new_np_array_dim_mappings = {key:ind+num_dims_to_concat for ind, key in enumerate(new_np_array_dim_keys)}
 
-        # TODO: Reduce memory consumption with less names here?
-        for j, reproj_dataarray in enumerate(reproj_dataarrays):
-            reproj_dataarray_expanded = np.expand_dims(reproj_dataarray, tuple(np.arange(len(reproj_dataarray.shape),len(new_array_shape)+num_dims_to_concat)))
-            if len(all_new_keys[j]) != 0:
-                reproj_dataarray_expanded = np.moveaxis(reproj_dataarray_expanded, itemgetter(*all_new_keys[j])(data_arrays_dim_mappings[j]), 
-                                                                            itemgetter(*all_new_keys[j])(new_np_array_dim_mappings))
-            reproj_dataarray_broadcasted = np.broadcast_to(reproj_dataarray_expanded, reproj_dataarray_expanded.shape[:num_dims_to_concat] + new_array_shape)
-            reproj_dataarrays_broadcasted.append(reproj_dataarray_broadcasted)
+        # # TODO: Reduce memory consumption with less names here?
+        # for j, reproj_dataarray in enumerate(reproj_dataarrays):
+        #     reproj_dataarray_expanded = np.expand_dims(reproj_dataarray, tuple(np.arange(len(reproj_dataarray.shape),len(new_array_shape)+num_dims_to_concat)))
+        #     if len(all_new_keys[j]) != 0:
+        #         reproj_dataarray_expanded = np.moveaxis(reproj_dataarray_expanded, itemgetter(*all_new_keys[j])(data_arrays_dim_mappings[j]), 
+        #                                                                     itemgetter(*all_new_keys[j])(new_np_array_dim_mappings))
+        #     reproj_dataarray_broadcasted = np.broadcast_to(reproj_dataarray_expanded, reproj_dataarray_expanded.shape[:num_dims_to_concat] + new_array_shape)
+        #     reproj_dataarrays_broadcasted.append(reproj_dataarray_broadcasted)
 
-        return np.concatenate(reproj_dataarrays_broadcasted, axis=0), all_var_keys, all_new_keys
+        # return np.concatenate(reproj_dataarrays_broadcasted, axis=0), all_var_keys, all_new_keys
+        return xr.merge(reproj_datasets).to_array().to_numpy(), None, None
 
 
     def _filter_patch_pixels(self, reproj_datasets, patch_size, x_dim_name, y_dim_name, data_settings_cfgs, patches_per_time, shuffle, filter_using_time):
