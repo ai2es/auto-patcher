@@ -56,6 +56,8 @@ class DatetimePair:
 
         if init_datetime is None:
             self.has_init_datetime = False
+            self.init_res_str = None
+            self.init_res_int = None
 
         else:
             if type(init_datetime) is not np.datetime64:
@@ -183,6 +185,7 @@ class Patcher:
         new_dataset_pos_in_file = []
         new_dataset_full_list_pos = []
         new_data_settings = []
+        self.non_offset_datetimes = []
 
         # Find out if at least one of the datasets we are using has init times. This is for an exception in the next block.
         has_init_time = False
@@ -198,14 +201,20 @@ class Patcher:
             time_offsets = data_settings_cfg["Data"]["time_offsets"]
             if len(time_offsets) != 0:
                 for time_offset in time_offsets:
-                    new_datasets_datetimes.append(dataset_datetimes - TimedeltaPair(val_timedelta=time_offset))
+                    time_offset_np = np.timedelta64(time_offset, 'm')
+                    new_datasets_datetimes.append(dataset_datetimes - TimedeltaPair(val_timedelta=time_offset_np))
+                    new_datasets_paths.append(copy.deepcopy(self.datasets_paths[i]))
+                    new_dataset_pos_in_file.append(copy.deepcopy(self.dataset_pos_in_file[i]))
+                    new_dataset_full_list_pos.append(copy.deepcopy(self.dataset_full_list_pos[i]))
+                    new_data_settings.append(copy.deepcopy(data_settings_cfg))
+                    self.non_offset_datetimes.append(copy.deepcopy(dataset_datetimes))
             else:
                 new_datasets_datetimes.append(copy.deepcopy(dataset_datetimes))
-        
-            new_datasets_paths.append(copy.deepcopy(self.datasets_paths[i]))
-            new_dataset_pos_in_file.append(copy.deepcopy(self.dataset_pos_in_file[i]))
-            new_dataset_full_list_pos.append(copy.deepcopy(self.dataset_full_list_pos[i]))
-            new_data_settings.append(copy.deepcopy(data_settings_cfg))
+                new_datasets_paths.append(copy.deepcopy(self.datasets_paths[i]))
+                new_dataset_pos_in_file.append(copy.deepcopy(self.dataset_pos_in_file[i]))
+                new_dataset_full_list_pos.append(copy.deepcopy(self.dataset_full_list_pos[i]))
+                new_data_settings.append(copy.deepcopy(data_settings_cfg))
+                self.non_offset_datetimes.append(copy.deepcopy(dataset_datetimes))
 
             # Setup governing dataset that controls the flow of all searches
             if data_settings_cfg["Data"]["govern_search"]:
@@ -218,13 +227,15 @@ class Patcher:
                     for dataset_datetime in new_datasets_datetimes[-1]:
                         if dataset_datetime.val_time_equals_init_time():
                             self.gov_datetimes.append(dataset_datetime)
+                    self.gov_datetimes = np.array(self.gov_datetimes)
                 else:
                     self.gov_datetimes = new_datasets_datetimes[-1]
 
         if self.gov_datetimes is None:
             raise Exception('No dataset selected to be governing dataset with "govern_search". Please run again with one dataset selected as the governing dataset!')
         
-        self.non_offset_datetimes = copy.deepcopy(self.datasets_datetimes)
+        print("Governing dataset size: " + str(len(self.gov_datetimes)))
+        
         self.datasets_paths = new_datasets_paths
         self.datasets_datetimes = new_datasets_datetimes
         self.dataset_pos_in_file = new_dataset_pos_in_file
@@ -236,12 +247,11 @@ class Patcher:
     def _split_datasets_for_parallel_jobs(self):
         n_parallel_runs = self.top_settings_patches["n_parallel_runs"]
         
-        # TODO: Again see if the casting is correct below ("np.array" and "list" calls)
         if n_parallel_runs is not None and n_parallel_runs != 0:
-            gov_datetimes_split = np.array_split(np.array(self.gov_datetimes), n_parallel_runs)
-            self.gov_datetimes = list(gov_datetimes_split[self.run_num])
+            gov_datetimes_split = np.array_split(self.gov_datetimes, n_parallel_runs)
+            self.gov_datetimes = gov_datetimes_split[self.run_num]
 
-            print("Governing dataset's file count after parallel job split: " + str(len(self.gov_datetimes)))
+            print("Governing dataset's date count after parallel job split: " + str(len(self.gov_datetimes)))
 
     
     def _load_all_dataset_metadata(self):
@@ -280,9 +290,9 @@ class Patcher:
         # Load all file paths accordiong to given regex, get datetimes according to regex, and perform datetime filtering.
         self.get_files_and_datetimes()
 
-        # Print a summary of found files across all datasets
-        file_counts = [len(ds_paths) for ds_paths in self.datasets_paths]
-        print('Number of files found: ' + str(file_counts))
+        # Print a summary of found datetimes across all datasets
+        file_counts = [len(datasets_datetime) for datasets_datetime in self.datasets_datetimes]
+        print('Number of dates found: ' + str(file_counts))
 
         # Make new datasets (paths, datetimes, index information, etc.) with an offset time so that consecutive times can be matched
         # to make pathces with an additional time dimension. Also make the governing dataset which is a just a list of datetimes that we match
@@ -411,10 +421,20 @@ class Patcher:
 
         if self.feature_patches is not None:
             feature_patch_path = os.path.join(feature_patches_root, "{:04d}".format(self.run_num) + ".nc")
+            for var_key in list(self.feature_patches.keys()):
+                if "units" in self.feature_patches[var_key].attrs:
+                    if type(self.feature_patches[var_key].attrs["units"]) is not str:
+                        self.feature_patches[var_key].attrs["units"] = ""
+            self.feature_patches.attrs = {}
             self.feature_patches.to_netcdf(feature_patch_path)
         
         if self.label_patches is not None:
             label_patch_path = os.path.join(label_patches_root, "{:04d}".format(self.run_num) + ".nc")
+            for var_key in list(self.label_patches.keys()):
+                if "units" in self.label_patches[var_key].attrs:
+                    if type(self.label_patches[var_key].attrs["units"]) is not str:
+                        self.label_patches[var_key].attrs["units"] = ""
+            self.label_patches.attrs = {}
             self.label_patches.to_netcdf(label_patch_path)
 
         print("Completed on search number: " + str(main_loop_counter))
@@ -425,7 +445,7 @@ class Patcher:
     def make_datetime_netcdf_file(self, single_dataset_paths, dataset_index, lat_dim, lon_dim, time_cord_name, time_dim_name, output_path):
         warnings.warn("Starting internal datetime saving process, this will take a while. This is needed if you are working with datasets that have internal times. File only has to be made once.")
 
-        if self.top_settings_patches["n_parallel_runs"] != 0 or self.run_num != 0:
+        if self.top_settings_patches["n_parallel_runs"] != 1 or self.run_num != 0:
             raise Exception("When making a datetime netcdf file you MUST have only one proccess running and it must be labeled as run number 0.")
 
         extracted_ds = None
@@ -443,9 +463,10 @@ class Patcher:
             # This block is for concatenating the individual datasets together into one xarray dataset
             if extracted_ds is None:
                 extracted_ds = copy.deepcopy(ds)
-                ds.close()
             else:
                 extracted_ds = xr.concat([extracted_ds, ds], dim=time_dim_name)
+            
+            ds.close()
 
         if extracted_ds is not None:
             extracted_ds.to_netcdf(output_path)
@@ -456,7 +477,6 @@ class Patcher:
     def load_datetimes_from_pre_saved_netcdf(self, path, time_cord_name):
         ds = xr.open_dataset(path)
 
-        # TODO: Confirm if these can be numpy arrays or if they have to be lists b/c of legacy systems
         ds_datetimes = ds[time_cord_name].to_numpy()
         ds_full_pos = ds["full_list_pos"].to_numpy()
         ds_pos_in_file = ds["pos_in_file"].to_numpy()
@@ -538,12 +558,12 @@ class Patcher:
         while not found_files and self.date_counter < len(self.gov_datetimes):
             self.date_indices = []
             self.time_indices = []
+            self.time_str_indices = [] # For the printing of the datetimes in the load_dataset_from_disk method
 
             for i, dataset_datetimes in enumerate(self.datasets_datetimes):
-                dataset_datetimes = np.array(dataset_datetimes) #TODO: remove when changing self.datasets_datetimes's setup to not be simple list
                 current_datetime = self.gov_datetimes[self.date_counter]
 
-                date_index = np.nonzero(current_datetime == dataset_datetimes)
+                date_index = np.nonzero(np.equal(current_datetime, dataset_datetimes))
 
                 if len(date_index[0]) == 0:
                     break
@@ -552,6 +572,7 @@ class Patcher:
                 
                 self.time_indices.append(self.dataset_pos_in_file[i][date_index])
                 self.date_indices.append(self.dataset_full_list_pos[i][date_index])
+                self.time_str_indices.append(date_index)
 
             if len(self.date_indices) == len(self.datasets_datetimes):
                 found_files = True
@@ -626,8 +647,8 @@ class Patcher:
         adjusted_y_dim_names_labels = []
         data_settings_cfgs = self.data_settings
 
-        for i, (file_index, time_index) in enumerate(zip(self.date_indices, self.time_indices)):
-            loaded_datetimes.append(self.non_offset_datetimes[i][file_index])
+        for i, (file_index, time_index, time_str_index) in enumerate(zip(self.date_indices, self.time_indices, self.time_str_indices)):
+            loaded_datetimes.append(self.non_offset_datetimes[i][time_str_index])
             loaded_filenames.append(self.datasets_paths[i][file_index])
 
             path = self.datasets_paths[i][file_index]
@@ -676,12 +697,12 @@ class Patcher:
             ds = self._add_custom_vars(ds, data_settings_cfgs, i, False)
 
             if data_settings_cfgs[i]["Data"]["is_label_data"]:
-                loaded_datetimes_labels.append(self.non_offset_datetimes[i][file_index])
+                loaded_datetimes_labels.append(self.non_offset_datetimes[i][time_str_index])
                 adjusted_x_dim_names_labels.append(x_dim_name)
                 adjusted_y_dim_names_labels.append(y_dim_name)
                 dataset_configs_labels.append(data_settings_cfgs[i])
             else:
-                loaded_datetimes_examples.append(self.non_offset_datetimes[i][file_index])
+                loaded_datetimes_examples.append(self.non_offset_datetimes[i][time_str_index])
                 adjusted_x_dim_names_examples.append(x_dim_name)
                 adjusted_y_dim_names_examples.append(y_dim_name)
                 dataset_configs_examples.append(data_settings_cfgs[i])
@@ -689,10 +710,11 @@ class Patcher:
             loaded_datasets.append(ds)
         
         # Print to stdout information about this search
-        print("File(s) that were used:")
-        print(loaded_filenames)
-        print("Time(s) that were used:")
-        print(loaded_datetimes)
+        if self.top_settings_patches["run_debug_text"]:
+            print("File(s) that were used:")
+            print(loaded_filenames)
+            print("Time(s) that were used:")
+            print(loaded_datetimes)
 
         loaded_datasets = self._reproject_datasets(loaded_datasets)
         if self.dataset_empty_or_out_of_range:
@@ -718,15 +740,21 @@ class Patcher:
         # be named the same from the assign_coords lines in _load_datasets_from_disk
         loaded_datasets_adjusted_dim_names = []
         for i, loaded_dataset in enumerate(loaded_datasets):
-            if adjusted_x_dim_names[i] != "lon_dim":
+            if adjusted_x_dim_names[i] != "lon_dim" and "lon_dim" not in loaded_dataset.dims:
                 loaded_dataset = loaded_dataset.rename_dims({adjusted_x_dim_names[i]: "lon_dim"})
-            if adjusted_y_dim_names[i] != "lat_dim":
+            if adjusted_y_dim_names[i] != "lat_dim" and "lat_dim" not in loaded_dataset.dims:
                 loaded_dataset = loaded_dataset.rename_dims({adjusted_y_dim_names[i]: "lat_dim"})
             loaded_datasets_adjusted_dim_names.append(loaded_dataset)
             loaded_dataset.close()
 
         # Try to free up some memory
         loaded_datasets = None
+
+        # Make the datetimes list only contain numpy datetimes and not my datetimepair objects for later
+        loaded_datetimes_np = []
+        for loaded_datetime in loaded_datetimes:
+            loaded_datetimes_np.append(loaded_datetime.datetime_pair[0])
+        loaded_datetimes = loaded_datetimes_np
 
         # Reorder our datasets into nested lists that contain data from the same 
         # dataset over its entire time period. So "loaded_datasets_ordered_by_time" can be descibed as a list of time series lists
@@ -737,20 +765,20 @@ class Patcher:
         single_ds_group_of_times = []
         single_ds_datetimes = []
         for i, data_settings_cfg in enumerate(loaded_dataset_settings):
-            if data_settings_cfg["Path"]["dataset_name"] != last_ds_name:
+            if data_settings_cfg["dataset_name"] != last_ds_name:
                 if last_ds_name != "":
                     loaded_datasets_ordered_by_time.append(single_ds_group_of_times)
-                    loaded_datetimes_ordered_by_time.append(single_ds_datetimes)
-                    dataset_names.append(data_settings_cfg["Path"]["dataset_name"])
+                    loaded_datetimes_ordered_by_time.append(np.array(single_ds_datetimes, dtype=np.datetime64))
+                    dataset_names.append(data_settings_cfg["dataset_name"])
                     single_ds_group_of_times = []
                     single_ds_datetimes = []
             single_ds_group_of_times.append(loaded_datasets_adjusted_dim_names[i])
             single_ds_datetimes.append(loaded_datetimes[i])
-            last_ds_name = data_settings_cfg["Path"]["dataset_name"]
+            last_ds_name = data_settings_cfg["dataset_name"]
             loaded_datasets_adjusted_dim_names[i].close()
         loaded_datasets_ordered_by_time.append(single_ds_group_of_times)
-        loaded_datetimes_ordered_by_time.append(single_ds_datetimes)
-        dataset_names.append(data_settings_cfg["Path"]["dataset_name"])
+        loaded_datetimes_ordered_by_time.append(np.array(single_ds_datetimes, dtype=np.datetime64))
+        dataset_names.append(data_settings_cfg["dataset_name"])
 
         # Create a list that keeps track of all lengths of time we are working with based on the number of xarray datasets in each of
         # the above described nested lists
@@ -810,7 +838,7 @@ class Patcher:
         data_settings_cfgs = self.data_settings
 
         reproj_ds_index = -1
-        for data_settings_cfg in data_settings_cfgs:
+        for i, data_settings_cfg in enumerate(data_settings_cfgs):
             if data_settings_cfg["Data"]["reproj_target"]:
                 reproj_ds_index = i
         if reproj_ds_index == -1:
@@ -1016,8 +1044,9 @@ class Patcher:
 
         print("Accepted Patches: " + str(pixel_counters))
 
-        self.feature_patches = self._concat_patches(self.feature_patches, example_patches)
-        self.label_patches = self._concat_patches(self.label_patches, label_patches)
+        for example_patch, label_patch in zip(example_patches, label_patches):
+            self.feature_patches = self._concat_patches(self.feature_patches, example_patch)
+            self.label_patches = self._concat_patches(self.label_patches, label_patch)
 
         for patch in example_patches:
             patch.close()
@@ -1062,7 +1091,7 @@ class Patcher:
         self.dataset_full_list_pos = []
 
         for i, data_settings_cfg in enumerate(self.data_settings):
-            file_list = self.create_file_list(data_settings_cfg["Path"]["root_dir"], 
+            file_list = self._create_file_list(data_settings_cfg["Path"]["root_dir"], 
                                                 data_settings_cfg["Path"]["path_glob"], 
                                                 data_settings_cfg["Path"]["path_reg"])
 
@@ -1080,17 +1109,9 @@ class Patcher:
             # The if condition below is for the case where the patcher to load datetime data from within the dataset netcdf files themselves
             if data_settings_cfg["Data"]["has_time_cord"]:
 
-                # Make the complete path to the datetime netcdf using the given datetime_netcdf_dir and a start-end.nc naming system
-                datetime_netcdf_dir = data_settings_cfg["Path"]["datetime_netcdf_dir"]
-                if self.dataset_start_times is None:
-                    start_str = ""
-                else:
-                    start_str = self.dataset_start_times
-                if self.dataset_end_times is None:
-                    end_str = ""
-                else:
-                    end_str = self.dataset_end_times
-                datetime_netcdf_path = os.path.join(datetime_netcdf_dir, start_str + "-" + end_str + ".nc")
+                # Make the complete path to the datetime netcdf using the given datetime_netcdf_dir and the dataset name
+                datetime_netcdf_dir = self.top_settings_input["datetime_netcdf_dir"]
+                datetime_netcdf_path = os.path.join(datetime_netcdf_dir, self.top_settings_input["dataset_names"][i] + ".nc")
 
                 # Pull the datetime information from already created datetime netcdf
                 if os.path.exists(datetime_netcdf_path):
@@ -1112,12 +1133,12 @@ class Patcher:
 
 
 
-            file_list, dateset_datetimes, init_dateset_datetimes, [ds_full_pos, ds_pos_in_file] = self._select_data_range(file_list, self.dataset_start_times[i], self.dataset_end_times[i],
-                                                                                                  data_settings_cfg["Bounds"]["use_date_for_data_range"], 
-                                                                                                  dateset_datetimes, dataset_date_resolution, init_dateset_datetimes, [ds_full_pos, ds_pos_in_file])
+            dateset_datetimes, init_dateset_datetimes, [ds_full_pos, ds_pos_in_file] = self._select_data_range(self.dataset_start_times[i], self.dataset_end_times[i],
+                                                                                                dateset_datetimes, data_settings_cfg["Bounds"]["use_date_for_data_range"], 
+                                                                                                dataset_date_resolution, init_dateset_datetimes, [ds_full_pos, ds_pos_in_file])
 
 
-            if len(file_list) == 0:
+            if len(dateset_datetimes) == 0:
                 raise Exception('No files found under given "data_start" and "data_end" settings for at least one dataset, despite files being found given your glob and regex settings. If using dates, maybe they are incorrect?')
             
             # This block creates the actual DatetimePair objects
@@ -1133,17 +1154,17 @@ class Patcher:
 
             # Assign everything to class fields
             self.datasets_paths.append(file_list)
-            self.datasets_datetimes.append(datetime_pair_obj_list)
+            self.datasets_datetimes.append(np.array(datetime_pair_obj_list))
             self.dataset_pos_in_file.append(ds_pos_in_file)
             self.dataset_full_list_pos.append(ds_full_pos)
         
 
-    # NOTE: Assumes np_array is array (NOT LIST) of np.datetime64 objects (NOT datetime.date objects)
-    def _convert_datetime64_array_to_list(self, np_array):
-        new_list = []
-        for np_datetime in np_array:
-            new_list.append(np_datetime)
-        return new_list
+    # # NOTE: Assumes np_array is array (NOT LIST) of np.datetime64 objects (NOT datetime.date objects)
+    # def _convert_datetime64_array_to_list(self, np_array):
+    #     new_list = []
+    #     for np_datetime in np_array:
+    #         new_list.append(np_datetime)
+    #     return new_list
 
 
     # Three possible options:
@@ -1153,9 +1174,7 @@ class Patcher:
     # NOTE: Does not check validity of selections. May add that later
     # NOTE: Please make sure the start and end dates in ISO_8601 format
     # Other_lists is a list of (right now numpy arrays, see NOTE below) that contain non-datetime objects that also need to be cut by the date range
-    def _select_data_range(self, file_list, data_start, data_end, use_date=False, dates_list=None, dataset_date_resolution=None, init_date_list=None, other_lists=None):
-        file_list = np.array(file_list)
-
+    def _select_data_range(self, data_start, data_end, dates_list, use_date=False, dataset_date_resolution=None, init_date_list=None, other_lists=None):
         # NOTE: Other lists assumes to be numpy arrays. If I change them to be actual python lists becuase of the 
         # legacy reasons discussed in the netcdf datetime file method, then an array cast will be needed below.
         new_other_lists = []
@@ -1169,42 +1188,36 @@ class Patcher:
 
             if data_start is not None and data_end is not None:
                 inds = np.where(np.logical_and(dates_list >= start_date, dates_list <= end_date))
-                dates_list = np.array(dates_list)
                 if init_date_list is not None:
-                    init_date_list = np.array(init_date_list)
-                    init_date_list = self._convert_datetime64_array_to_list(init_date_list[inds])
+                    init_date_list = init_date_list[inds]
                 if other_lists is not None:
                     for other_list in other_lists:
                         new_other_lists.append(other_list[inds])
                     other_lists = new_other_lists
-                return file_list[inds].tolist(), self._convert_datetime64_array_to_list(dates_list[inds]), init_date_list, other_lists
+                return dates_list[inds], init_date_list, other_lists
             
             elif data_start is None and data_end is not None:
                 inds = np.where(dates_list <= end_date)
-                dates_list = np.array(dates_list)
                 if init_date_list is not None:
-                    init_date_list = np.array(init_date_list)
-                    init_date_list = self._convert_datetime64_array_to_list(init_date_list[inds])
+                    init_date_list = init_date_list[inds]
                 if other_lists is not None:
                     for other_list in other_lists:
                         new_other_lists.append(other_list[inds])
                     other_lists = new_other_lists
-                return file_list[inds].tolist(), self._convert_datetime64_array_to_list(dates_list[inds]), init_date_list, other_lists
+                return dates_list[inds], init_date_list, other_lists
             
             elif data_start is not None and data_end is None:
                 inds = np.where(dates_list >= start_date)
-                dates_list = np.array(dates_list)
                 if init_date_list is not None:
-                    init_date_list = np.array(init_date_list)
-                    init_date_list = self._convert_datetime64_array_to_list(init_date_list[inds])
+                    init_date_list = init_date_list[inds]
                 if other_lists is not None:
                     for other_list in other_lists:
                         new_other_lists.append(other_list[inds])
                     other_lists = new_other_lists
-                return file_list[inds].tolist(), self._convert_datetime64_array_to_list(dates_list[inds]), init_date_list, other_lists
+                return dates_list[inds], init_date_list, other_lists
             
             else:
-                return file_list.tolist(), dates_list, init_date_list, other_lists
+                return dates_list, init_date_list, other_lists
         
         else:
             start_index = 0
@@ -1214,34 +1227,26 @@ class Patcher:
                 if isinstance(data_start, int):
                     start_index = data_start
                 elif isinstance(data_start, float):
-                    start_index = int(data_start*len(file_list))
-                elif isinstance(data_start, str):
-                    start_index = np.where(file_list == data_start)[0][0]
-                    end_index = start_index + 1
+                    start_index = int(data_start*len(dates_list))
 
             if data_end is not None:
                 if isinstance(data_end, int):
                     end_index = data_end
                 elif isinstance(data_end, float):
-                    end_index = int(data_end*len(file_list))
-                elif isinstance(data_end, str):
-                    start_index = np.where(file_list == data_end)[0][0]
-                    end_index = start_index + 1
+                    end_index = int(data_end*len(dates_list))
         
             if dates_list is not None:
-                dates_list = np.array(dates_list)
-                dates_list = self._convert_datetime64_array_to_list(dates_list[start_index:end_index])
+                dates_list = dates_list[start_index:end_index]
             
             if init_date_list is not None:
-                init_date_list = np.array(init_date_list)
-                init_date_list = self._convert_datetime64_array_to_list(init_date_list[start_index:end_index])
+                init_date_list = init_date_list[start_index:end_index]
             
             if other_lists is not None:
                 for other_list in other_lists:
                     new_other_lists.append(other_list[start_index:end_index])
                 other_lists = new_other_lists
 
-            return file_list[start_index:end_index].tolist(), dates_list, init_date_list, other_lists
+            return dates_list, init_date_list, other_lists
 
     
     def _find_datetime_resolution(self, datetime_char):
@@ -1340,7 +1345,7 @@ class Patcher:
         if len(datetimes) == 0:
             raise Exception('Failed to extract datetime values using "dt_positions", "dt_regs", and "dt_formats" for at least one dataset. Probably have a mistake in your regular expressions.')
 
-        return datetimes, dataset_date_resolution, dataset_date_resolution_val
+        return np.array(datetimes), dataset_date_resolution, dataset_date_resolution_val
 
 
     # NOTE: In path_glob only include wild card operators for each directory level you want to search across.
