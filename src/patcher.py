@@ -14,6 +14,7 @@ from collections import OrderedDict
 from tensorflow.keras.utils import to_categorical
 import netCDF4 as nc
 from tqdm import tqdm
+import time
 
 
 # NOTE: netcdf4 also need to be manually installed as dependencies
@@ -394,7 +395,9 @@ class Patcher:
                 break
             main_loop_counter = main_loop_counter + 1
 
+            start_time = time.time()
             found_files = self._find_indeces_of_matching_datasets()
+            print("Matching dataset time: " + str(time.time() - start_time))
 
             if not found_files:
                 warnings.warn('WARNING: Ran out of files with matching datetimes. Number of completed patches may be less than expected. Please consider adjusting "patches_per_unit_time"')
@@ -419,6 +422,7 @@ class Patcher:
             print("Indices of patches added in this search: " + indices_str)
             print("---------------------------------------------")
 
+        start_time = time.time()
         if self.feature_patches is not None:
             feature_patch_path = os.path.join(feature_patches_root, "{:04d}".format(self.run_num) + ".nc")
             for var_key in list(self.feature_patches.keys()):
@@ -427,7 +431,9 @@ class Patcher:
                         self.feature_patches[var_key].attrs["units"] = ""
             self.feature_patches.attrs = {}
             self.feature_patches.to_netcdf(feature_patch_path)
+        print("Save examples netcdf time: " + str(time.time() - start_time))
         
+        start_time = time.time()
         if self.label_patches is not None:
             label_patch_path = os.path.join(label_patches_root, "{:04d}".format(self.run_num) + ".nc")
             for var_key in list(self.label_patches.keys()):
@@ -436,6 +442,7 @@ class Patcher:
                         self.label_patches[var_key].attrs["units"] = ""
             self.label_patches.attrs = {}
             self.label_patches.to_netcdf(label_patch_path)
+        print("Save labels netcdf time: " + str(time.time() - start_time))
 
         print("Completed on search number: " + str(main_loop_counter))
         print("Final patch count per balanced class:")
@@ -647,6 +654,7 @@ class Patcher:
         adjusted_y_dim_names_labels = []
         data_settings_cfgs = self.data_settings
 
+        start_time = time.time()
         for i, (file_index, time_index, time_str_index) in enumerate(zip(self.date_indices, self.time_indices, self.time_str_indices)):
             loaded_datetimes.append(self.non_offset_datetimes[i][time_str_index])
             loaded_filenames.append(self.datasets_paths[i][file_index])
@@ -685,6 +693,10 @@ class Patcher:
             # Select only the data we want
             ds = ds[data_settings_cfgs[i]["Data"]["selected_vars"]]
 
+            # Set to float32 if needed:
+            if self.top_settings_patches["make_float32"]:
+                ds = ds.astype(np.float32)
+
             # If only one key is given ds is reverted to a xarray dataarray.
             # This is not useful for later functions so this is changed back to a xarray dataset
             if type(ds) is xr.core.dataarray.DataArray:
@@ -708,6 +720,8 @@ class Patcher:
                 dataset_configs_examples.append(data_settings_cfgs[i])
             
             loaded_datasets.append(ds)
+
+        print("Load dataset time: " + str(time.time() - start_time))
         
         # Print to stdout information about this search
         if self.top_settings_patches["run_debug_text"]:
@@ -716,9 +730,11 @@ class Patcher:
             print("Time(s) that were used:")
             print(loaded_datetimes)
 
+        start_time = time.time()
         loaded_datasets = self._reproject_datasets(loaded_datasets)
         if self.dataset_empty_or_out_of_range:
             return
+        print("Reproj dataset time: " + str(time.time() - start_time))
 
         # Had to sort these into their respective label and example lists after the other loop becuase _reproject_datasets
         # needed to have all loaded datasets at the same time to function correctly
@@ -727,10 +743,21 @@ class Patcher:
                 loaded_datasets_labels.append(loaded_datasets[i])
             else:
                 loaded_datasets_examples.append(loaded_datasets[i])
+            loaded_datasets[i].close()
         loaded_datasets = None
 
+        start_time = time.time()
         self.master_xarray_dataset_examples = self._create_master_xarray_dataset(loaded_datasets_examples, adjusted_x_dim_names_examples, adjusted_y_dim_names_examples, loaded_datetimes_examples, dataset_configs_examples)
         self.master_xarray_dataset_labels = self._create_master_xarray_dataset(loaded_datasets_labels, adjusted_x_dim_names_labels, adjusted_y_dim_names_labels, loaded_datetimes_labels, dataset_configs_labels)
+        print("Master dataset time: " + str(time.time() - start_time))
+
+        # Free up memory
+        for ds in loaded_datasets_examples:
+            ds.close()
+        for ds in loaded_datasets_labels:
+            ds.close()
+        loaded_datasets_examples = None
+        loaded_datasets_labels = None
 
 
     # Create an xarray dataset object that encompasses all of the currently loaded data from disk. 
@@ -770,6 +797,8 @@ class Patcher:
                     loaded_datasets_ordered_by_time.append(single_ds_group_of_times)
                     loaded_datetimes_ordered_by_time.append(np.array(single_ds_datetimes, dtype=np.datetime64))
                     dataset_names.append(data_settings_cfg["dataset_name"])
+                    for ds in single_ds_group_of_times:
+                        ds.close()
                     single_ds_group_of_times = []
                     single_ds_datetimes = []
             single_ds_group_of_times.append(loaded_datasets_adjusted_dim_names[i])
@@ -787,7 +816,10 @@ class Patcher:
             grouping_lens.append(len(loaded_dataset_group))
 
         # Try to free up some memory
-        # TODO: Consider if the .close() system will need to also be called for everything in "single_ds_group_of_times" aswell
+        for ds in single_ds_group_of_times:
+            ds.close()
+        for ds in loaded_datasets_adjusted_dim_names:
+            ds.close()
         loaded_datasets_adjusted_dim_names = None
         single_ds_group_of_times = None
 
@@ -828,6 +860,12 @@ class Patcher:
         else:
             master_xarray_dataset = copy.deepcopy(dataset_list_to_merge[0])
         master_xarray_dataset = master_xarray_dataset.assign(xarray_dataset_datetimes)
+
+        # Try to free up some memory
+        for dataset_list in loaded_datasets_ordered_by_time:
+            for ds in dataset_list:
+                ds.close()
+        loaded_datasets_ordered_by_time = None
 
         return master_xarray_dataset
 
@@ -890,115 +928,189 @@ class Patcher:
     #     return master_np_array.reshape(list_ds_shape)
 
 
-    def _filter_patch_pixels(self, reproj_datasets, patch_size, x_dim_name, y_dim_name, data_settings_cfgs, patches_per_time, shuffle, filter_using_time):
-        filtered_balanced_pixels = []
-        all_filters = []
-        all_thresholds = []
-        all_balanced_filters = []
-        all_balanced_thresholds = []
-        for data_settings_cfg in data_settings_cfgs:
-            for i, filter in enumerate(data_settings_cfg["Filtration"]["filters"]):
-                all_filters.append(filter)
-                all_thresholds.append(data_settings_cfg["Filtration"]["filter_patch_threshold"][i])
-            for i, filter in enumerate(data_settings_cfg["Filtration"]["filters_balanced"]):
-                all_balanced_filters.append(filter)
-                all_balanced_thresholds.append(data_settings_cfg["Filtration"]["filter_patch_threshold_balanced"][i])
+    # def _filter_patch_pixels(self, reproj_datasets, patch_size, x_dim_name, y_dim_name, data_settings_cfgs, patches_per_time, shuffle, filter_using_time):
+    #     filtered_balanced_pixels = []
+    #     all_filters = []
+    #     all_thresholds = []
+    #     all_balanced_filters = []
+    #     all_balanced_thresholds = []
+    #     for data_settings_cfg in data_settings_cfgs:
+    #         for i, filter in enumerate(data_settings_cfg["Filtration"]["filters"]):
+    #             all_filters.append(filter)
+    #             all_thresholds.append(data_settings_cfg["Filtration"]["filter_patch_threshold"][i])
+    #         for i, filter in enumerate(data_settings_cfg["Filtration"]["filters_balanced"]):
+    #             all_balanced_filters.append(filter)
+    #             all_balanced_thresholds.append(data_settings_cfg["Filtration"]["filter_patch_threshold_balanced"][i])
 
-        if len(all_balanced_filters) == 0:
-            num_of_filters = 1
-        else:
-            num_of_filters = len(all_balanced_filters)
+    #     if len(all_balanced_filters) == 0:
+    #         num_of_filters = 1
+    #     else:
+    #         num_of_filters = len(all_balanced_filters)
 
-        # NOTE: This new process assumes that any time dimensions have been stacked together in each individual xarray dataset object
+    #     # NOTE: This new process assumes that any time dimensions have been stacked together in each individual xarray dataset object
 
-        # Determine how many dims to concat based on if the time dim is present
-        if filter_using_time:
-            num_master_array_dims_to_concat = 4
-        else:
-            num_master_array_dims_to_concat = 3
+    #     # Determine how many dims to concat based on if the time dim is present
+    #     if filter_using_time:
+    #         num_master_array_dims_to_concat = 4
+    #     else:
+    #         num_master_array_dims_to_concat = 3
 
-        # Creates a broadcasted numpy array of all our data across all dimensions for powerful manipulation
-        # dataset_master_np_array, var_keys, dim_keys = self._make_master_np_array(reproj_datasets, x_dim_name, y_dim_name, num_master_array_dims_to_concat)
+    #     # Creates a broadcasted numpy array of all our data across all dimensions for powerful manipulation
+    #     # dataset_master_np_array, var_keys, dim_keys = self._make_master_np_array(reproj_datasets, x_dim_name, y_dim_name, num_master_array_dims_to_concat)
 
-        # If domains do not nicely line up with factors of patch size, cut out extra
-        if dataset_master_np_array.shape[1] % patch_size != 0:
-            extra_pixels = dataset_master_np_array.shape[1] % patch_size
-            dataset_master_np_array = np.take(dataset_master_np_array, np.arange(dataset_master_np_array.shape[1]-extra_pixels), axis=1)
-        if dataset_master_np_array.shape[2] % patch_size != 0:
-            extra_pixels = dataset_master_np_array.shape[2] % patch_size
-            dataset_master_np_array = np.take(dataset_master_np_array, np.arange(dataset_master_np_array.shape[2]-extra_pixels), axis=2)
+    #     # If domains do not nicely line up with factors of patch size, cut out extra
+    #     if dataset_master_np_array.shape[1] % patch_size != 0:
+    #         extra_pixels = dataset_master_np_array.shape[1] % patch_size
+    #         dataset_master_np_array = np.take(dataset_master_np_array, np.arange(dataset_master_np_array.shape[1]-extra_pixels), axis=1)
+    #     if dataset_master_np_array.shape[2] % patch_size != 0:
+    #         extra_pixels = dataset_master_np_array.shape[2] % patch_size
+    #         dataset_master_np_array = np.take(dataset_master_np_array, np.arange(dataset_master_np_array.shape[2]-extra_pixels), axis=2)
 
-        # Make array for tracking indeces in original dataset of each new patch
-        ds_dims_x, ds_dims_y = np.meshgrid(np.arange(dataset_master_np_array.shape[1]), np.arange(dataset_master_np_array.shape[2]))
-        ds_dims = np.stack([ds_dims_y, ds_dims_x], axis=0)
+    #     # Make array for tracking indeces in original dataset of each new patch
+    #     ds_dims_x, ds_dims_y = np.meshgrid(np.arange(dataset_master_np_array.shape[1]), np.arange(dataset_master_np_array.shape[2]))
+    #     ds_dims = np.stack([ds_dims_y, ds_dims_x], axis=0)
 
-        # Setup bool array for tracking patch rejection
-        vaid_pixels_bool = np.zeros((dataset_master_np_array.shape[1], dataset_master_np_array.shape[2], num_of_filters))
+    #     # Setup bool array for tracking patch rejection
+    #     vaid_pixels_bool = np.zeros((dataset_master_np_array.shape[1], dataset_master_np_array.shape[2], num_of_filters))
 
-        # Split our domains into evenly distributed patches
-        # shape of (patch_row_num, patch_col_num, n_variables_across_all_datasets, patch_dim_0, patch_dim_1, ...)
-        # and (patch_row_num, patch_col_num, ds_dims, patch_dim_0, patch_dim_1) respectively
-        dataset_master_np_array = np.array(np.split(dataset_master_np_array, dataset_master_np_array.shape[2]/patch_size, axis=2))
-        dataset_master_np_array = np.array(np.split(dataset_master_np_array, dataset_master_np_array.shape[2]/patch_size, axis=2))
-        ds_dims = np.array(np.split(ds_dims, ds_dims.shape[2]/patch_size, axis=2))
-        ds_dims = np.array(np.split(ds_dims, ds_dims.shape[2]/patch_size, axis=2))
+    #     # Split our domains into evenly distributed patches
+    #     # shape of (patch_row_num, patch_col_num, n_variables_across_all_datasets, patch_dim_0, patch_dim_1, ...)
+    #     # and (patch_row_num, patch_col_num, ds_dims, patch_dim_0, patch_dim_1) respectively
+    #     dataset_master_np_array = np.array(np.split(dataset_master_np_array, dataset_master_np_array.shape[2]/patch_size, axis=2))
+    #     dataset_master_np_array = np.array(np.split(dataset_master_np_array, dataset_master_np_array.shape[2]/patch_size, axis=2))
+    #     ds_dims = np.array(np.split(ds_dims, ds_dims.shape[2]/patch_size, axis=2))
+    #     ds_dims = np.array(np.split(ds_dims, ds_dims.shape[2]/patch_size, axis=2))
 
-        # Reshape to (n_patches, n_variables_across_all_datasets, n_pixels_per_patch, ...)
-        # and (n_patches, ds_dims, n_pixels_per_patch) respectively
-        # NOTE: This may be removed later if it is deemed better to keep the other shape
-        dataset_master_np_array = self._np_reshaper(dataset_master_np_array)
-        ds_dims = self._np_reshaper(ds_dims)
+    #     # Reshape to (n_patches, n_variables_across_all_datasets, n_pixels_per_patch, ...)
+    #     # and (n_patches, ds_dims, n_pixels_per_patch) respectively
+    #     # NOTE: This may be removed later if it is deemed better to keep the other shape
+    #     dataset_master_np_array = self._np_reshaper(dataset_master_np_array)
+    #     ds_dims = self._np_reshaper(ds_dims)
 
-        # Warn if you are trying to request more patches per unit time than is possible
-        if dataset_master_np_array.shape[0] < patches_per_time:
-            warnings.warn('At least one collection of datasets at a particular search attempt does not have enough space for your given "patches_per_time". Consider using less?')
+    #     # Warn if you are trying to request more patches per unit time than is possible
+    #     if dataset_master_np_array.shape[0] < patches_per_time:
+    #         warnings.warn('At least one collection of datasets at a particular search attempt does not have enough space for your given "patches_per_time". Consider using less?')
 
-        # Select the indeces for the upperleft corners of each patch only. (for the patch making function)
-        ds_dims = ds_dims[:,:,0]
+    #     # Select the indeces for the upperleft corners of each patch only. (for the patch making function)
+    #     ds_dims = ds_dims[:,:,0]
 
-        # Init all patch corners of boolean array to 1. Our filters switch them to 0 if they don't meet our requirements
-        vaid_pixels_bool[ds_dims[:,0], ds_dims[:,1], :] = 1
+    #     # Init all patch corners of boolean array to 1. Our filters switch them to 0 if they don't meet our requirements
+    #     vaid_pixels_bool[ds_dims[:,0], ds_dims[:,1], :] = 1
 
-        # Mark for removal any patches that contain any nans anywhere and in any dimension
-        if not self.ignore_nans:
-            indeces_of_nans = np.isnan(dataset_master_np_array)
-            indeces_of_nan_test_failure = np.nonzero(np.any(indeces_of_nans, axis=tuple(np.arange(1,len(dataset_master_np_array.shape)))))
-            vaid_pixels_bool[ds_dims[indeces_of_nan_test_failure[0],0], ds_dims[indeces_of_nan_test_failure[0],1], :] = 0
+    #     # Mark for removal any patches that contain any nans anywhere and in any dimension
+    #     if not self.ignore_nans:
+    #         indeces_of_nans = np.isnan(dataset_master_np_array)
+    #         indeces_of_nan_test_failure = np.nonzero(np.any(indeces_of_nans, axis=tuple(np.arange(1,len(dataset_master_np_array.shape)))))
+    #         vaid_pixels_bool[ds_dims[indeces_of_nan_test_failure[0],0], ds_dims[indeces_of_nan_test_failure[0],1], :] = 0
 
-        # Mark for removal any patches that fail our broad filters
-        for j, filter in enumerate(all_filters):
-            return_dict = OrderedDict()
-            exec(filter, globals().update(locals()), return_dict)
-            return_list = list(return_dict.items())
-            sum_of_each_patch = return_list[-1][-1]
-            rejected_pixels = np.nonzero(sum_of_each_patch < all_thresholds[j])
-            vaid_pixels_bool[ds_dims[rejected_pixels[0],0], ds_dims[rejected_pixels[0],1], :] = 0
+    #     # Mark for removal any patches that fail our broad filters
+    #     for j, filter in enumerate(all_filters):
+    #         return_dict = OrderedDict()
+    #         exec(filter, globals().update(locals()), return_dict)
+    #         return_list = list(return_dict.items())
+    #         sum_of_each_patch = return_list[-1][-1]
+    #         rejected_pixels = np.nonzero(sum_of_each_patch < all_thresholds[j])
+    #         vaid_pixels_bool[ds_dims[rejected_pixels[0],0], ds_dims[rejected_pixels[0],1], :] = 0
 
-        # Categorize patches by whether or not they fail our balanced filters
-        for j, filter in enumerate(all_balanced_filters):
-            return_dict = OrderedDict()
-            exec(filter, globals().update(locals()), return_dict)
-            return_list = list(return_dict.items())
-            sum_of_each_patch = return_list[-1][-1]
-            rejected_pixels = np.nonzero(sum_of_each_patch < all_balanced_thresholds[j])
-            vaid_pixels_bool[ds_dims[rejected_pixels[0],0], ds_dims[rejected_pixels[0],1], j] = 0
+    #     # Categorize patches by whether or not they fail our balanced filters
+    #     for j, filter in enumerate(all_balanced_filters):
+    #         return_dict = OrderedDict()
+    #         exec(filter, globals().update(locals()), return_dict)
+    #         return_list = list(return_dict.items())
+    #         sum_of_each_patch = return_list[-1][-1]
+    #         rejected_pixels = np.nonzero(sum_of_each_patch < all_balanced_thresholds[j])
+    #         vaid_pixels_bool[ds_dims[rejected_pixels[0],0], ds_dims[rejected_pixels[0],1], j] = 0
         
-        # TODO: Consider if this legacy code block should be replaced. Calling np.where again unnecessary?
-        for i in range(num_of_filters):
-            where_array = np.array(np.where(vaid_pixels_bool[:,:,i] == 1))
-            # TODO: Check this np.size if statement with some tests because I don't fully trust it
-            if np.size(where_array):
-                if shuffle:
-                    combined_lists_for_shuffle = list(zip(where_array[0], where_array[1]))
-                    random.shuffle(combined_lists_for_shuffle)
-                    where_array_x, where_array_y = zip(*combined_lists_for_shuffle)
-                    where_array_x, where_array_y = np.array(where_array_x), np.array(where_array_y)
-                    filtered_balanced_pixels.append(np.array([where_array_x, where_array_y]))
-                else:
-                    filtered_balanced_pixels.append(where_array)
-            else:
-                filtered_balanced_pixels.append(np.array([[], []]))
+    #     # TODO: Consider if this legacy code block should be replaced. Calling np.where again unnecessary?
+    #     for i in range(num_of_filters):
+    #         where_array = np.array(np.where(vaid_pixels_bool[:,:,i] == 1))
+    #         # TODO: Check this np.size if statement with some tests because I don't fully trust it
+    #         if np.size(where_array):
+    #             if shuffle:
+    #                 combined_lists_for_shuffle = list(zip(where_array[0], where_array[1]))
+    #                 random.shuffle(combined_lists_for_shuffle)
+    #                 where_array_x, where_array_y = zip(*combined_lists_for_shuffle)
+    #                 where_array_x, where_array_y = np.array(where_array_x), np.array(where_array_y)
+    #                 filtered_balanced_pixels.append(np.array([where_array_x, where_array_y]))
+    #             else:
+    #                 filtered_balanced_pixels.append(where_array)
+    #         else:
+    #             filtered_balanced_pixels.append(np.array([[], []]))
 
+    #     return filtered_balanced_pixels
+
+
+    def patch_mask_checker(self, array_1d):
+        patch_size = self.top_settings_patches["patch_size"]
+        for i in range(len(array_1d)-patch_size):
+            array_1d[i] = np.any(array_1d[i:i+patch_size])
+        return array_1d
+
+
+    def mask_checker_along_axis(self, array_2d, axis):
+        return np.apply_along_axis(self.patch_mask_checker, axis, array_2d)
+
+    
+    def get_valid_pixels(self, examples_ds, labels_ds):
+        patch_size = self.top_settings_patches["patch_size"]
+        examples_ds = examples_ds.drop("time", errors="ignore")
+        labels_ds = labels_ds.drop("time", errors="ignore")
+
+        ds = xr.merge([examples_ds, labels_ds])
+
+        lat_len = ds.dims["lat_dim"]
+        lon_len = ds.dims["lon_dim"]
+
+        valid_pixels_shape = [lon_len, lat_len]
+        for dim_name in self.top_settings_patches["maximized_nan_dims"]:
+            valid_pixels_shape.append(ds.dims[dim_name])
+        valid_pixels_shape = tuple(valid_pixels_shape)
+
+        if self.top_settings_patches["overlap_patches"]:
+            valid_pixels = np.ones(valid_pixels_shape, dtype=np.int64)
+            valid_pixels[lon_len - patch_size:, :, ...] = 0
+            valid_pixels[:, lat_len - patch_size:, ...] = 0
+        else:
+            valid_pixels = np.zeros(valid_pixels_shape, dtype=np.int64)
+            x_indices = np.arange(0, lon_len - patch_size, patch_size)
+            y_indices = np.arange(0, lat_len - patch_size, patch_size)
+            for x in x_indices:
+                for y in y_indices:
+                    valid_pixels[x, y, ...] = 1
+
+        if not self.top_settings_patches["ignore_nans"]:
+            ds = ds.to_array()
+            ds = ds.transpose("lat_dim", ...)
+            ds = ds.transpose("lon_dim", ...)
+            ds_dims = np.array(list(ds.dims))
+            ds_dims_to_collapse = list(ds.dims)
+            ds_dims_to_collapse.remove("lat_dim")
+            ds_dims_to_collapse.remove("lon_dim")
+            for dim_name in self.top_settings_patches["maximized_nan_dims"]:
+                ds_dims_to_collapse.remove(dim_name)
+            ds_dims_to_collapse = np.array(ds_dims_to_collapse)
+            ds_dims_to_collapse = np.in1d(ds_dims, ds_dims_to_collapse).nonzero()[0]
+            ds = ds.to_numpy()
+
+            nan_mask = np.any(np.isnan(ds), axis=tuple(ds_dims_to_collapse))
+            nan_mask = np.apply_over_axes(self.mask_checker_along_axis, nan_mask, axes=[0,1])
+            valid_pixels = np.logical_and(valid_pixels, np.logical_not(nan_mask))
+
+        # TODO: Change this back to older version of this system (with extra for-loop) when filters added back in
+        filtered_balanced_pixels = []
+        where_array = np.array(np.where(valid_pixels == 1))
+        # TODO: Check this np.size if statement with some tests because I don't fully trust it
+        if np.size(where_array):
+            if self.top_settings_patches["shuffle_patches_in_each_timestep"]:
+                combined_lists_for_shuffle = list(zip(*where_array))
+                random.shuffle(combined_lists_for_shuffle)
+                array_of_where_coords = np.array(list(zip(*combined_lists_for_shuffle)))
+                filtered_balanced_pixels.append(array_of_where_coords)
+            else:
+                filtered_balanced_pixels.append(where_array)
+        else:
+            filtered_balanced_pixels.append(np.array([[], []]))
+        
         return filtered_balanced_pixels
 
     
@@ -1013,16 +1125,14 @@ class Patcher:
         # TODO: MAJOR: Work on re-implementing the system below
         # NOTE: It seems that filtered_balanced_pixels is required to be a list of len "number of filters" that each contain a list of size 2
         # (for x and y coords respectively) that each contain a list of all the found pixels (of len "number of found pixels")
-        # This is a TEMP fix until I make filtering again
-        random_x_indices = np.arange(master_examples_dataset.dims["lon_dim"] - patch_size)
-        random_y_indices = np.arange(master_examples_dataset.dims["lat_dim"] - patch_size)
-        random.shuffle(random_x_indices)
-        random.shuffle(random_y_indices)
-        filtered_balanced_pixels = [[random_x_indices, random_y_indices]]
-        #############################################################################
-
+        ######### This is a TEMP fix until I make filtering again ##############################
+        start_time = time.time()
+        filtered_balanced_pixels = self.get_valid_pixels(master_examples_dataset, master_labels_dataset)
+        print("Find valid patches time: " + str(time.time() - start_time))
         # filtered_balanced_pixels = self._filter_patch_pixels(reproj_datasets,patch_size,x_dim_name,y_dim_name,data_settings_cfgs, patches_per_time, self.shuffle_patches_in_each_timestep, False)
+        #############################################################################
         
+        start_time = time.time()
         example_patches = []
         label_patches = []
         for i in range(self.patches_per_time):
@@ -1031,9 +1141,19 @@ class Patcher:
                 if filtered_balanced_counts[filter_balance_ind] < self.number_of_patches_per_balanced_var and len(filtered_balanced_pixels[filter_balance_ind][0]) > 0 and pixel_counters[filter_balance_ind] < len(filtered_balanced_pixels[filter_balance_ind][0]):
                     x_i = filtered_balanced_pixels[filter_balance_ind][0][pixel_counters[filter_balance_ind]]
                     y_i = filtered_balanced_pixels[filter_balance_ind][1][pixel_counters[filter_balance_ind]]
+           
+                    example_patch = self._make_patch(master_examples_dataset, patch_size, x_i, y_i)
+                    label_patch = self._make_patch(master_labels_dataset, patch_size, x_i, y_i)
 
-                    example_patches.append(self._make_patch(master_examples_dataset, patch_size, x_i, y_i))
-                    label_patches.append(self._make_patch(master_labels_dataset, patch_size, x_i, y_i))
+                    if filtered_balanced_pixels[filter_balance_ind].shape[0] > 2:
+                        for non_latlon_dim_index in np.arange(2, filtered_balanced_pixels[filter_balance_ind].shape[0]):
+                            if self.top_settings_patches["maximized_nan_dims"][non_latlon_dim_index-2] in example_patch.dims:
+                                example_patch = example_patch[{self.top_settings_patches["maximized_nan_dims"][non_latlon_dim_index-2]: filtered_balanced_pixels[filter_balance_ind][non_latlon_dim_index][pixel_counters[filter_balance_ind]]}]
+                            if self.top_settings_patches["maximized_nan_dims"][non_latlon_dim_index-2] in label_patch.dims:
+                                label_patch = label_patch[{self.top_settings_patches["maximized_nan_dims"][non_latlon_dim_index-2]: filtered_balanced_pixels[filter_balance_ind][non_latlon_dim_index][pixel_counters[filter_balance_ind]]}]
+
+                    example_patches.append(example_patch)
+                    label_patches.append(label_patch)
 
                     filtered_balanced_counts[filter_balance_ind] = filtered_balanced_counts[filter_balance_ind] + 1
                     pixel_counters[filter_balance_ind] = pixel_counters[filter_balance_ind] + 1
@@ -1044,16 +1164,24 @@ class Patcher:
 
         print("Accepted Patches: " + str(pixel_counters))
 
-        for example_patch, label_patch in zip(example_patches, label_patches):
-            self.feature_patches = self._concat_patches(self.feature_patches, example_patch)
-            self.label_patches = self._concat_patches(self.label_patches, label_patch)
+        self.feature_patches = self._concat_patches(self.feature_patches, example_patches)
+        self.label_patches = self._concat_patches(self.label_patches, label_patches)
 
+        print("Make patches time: " + str(time.time() - start_time))
+
+        # Free up memory
         for patch in example_patches:
             patch.close()
         for patch in label_patches:
             patch.close()
+        master_examples_dataset.close()
+        master_examples_dataset = None
+        master_labels_dataset.close()
+        master_labels_dataset = None
         self.master_xarray_dataset_examples.close()
         self.master_xarray_dataset_labels.close()
+        self.master_xarray_dataset_examples = None
+        self.master_xarray_dataset_labels = None
         self.filtered_balanced_counts = filtered_balanced_counts
 
     
@@ -1068,11 +1196,21 @@ class Patcher:
 
     
     def _concat_patches(self, patches, patch):
+        if patch is None or (type(patch) is list and len(patch) == 0):
+            return patches
         if patches is None:
-            patches = copy.deepcopy(patch.expand_dims(dim='n_samples'))
-            patch.close()
+            if type(patch) is xr.Dataset:
+                patches = copy.deepcopy(patch.expand_dims(dim='n_samples'))
+                patch.close()
+            else:
+                patches = xr.concat(patch, dim='n_samples')
         else:
-            patches = xr.concat([patches,patch.expand_dims(dim='n_samples')],dim='n_samples')
+            if type(patch) is xr.Dataset:
+                patches = xr.concat([patches, patch.expand_dims(dim='n_samples')], dim='n_samples')
+            else:
+                patches = [patches]
+                patches.extend(patch)
+                patches = xr.concat(patches, dim='n_samples')
 
         return patches
     
