@@ -681,14 +681,11 @@ class Patcher:
                 raise Exception("At least one dataset has lat/lons with either too few or too many dimensions. lat/lons must be either 2d or 1d.")
             
             dims = [dim for dim in ds.dims]
-            if "lon_dim" in dims:
-                x_dim_name = "lon_dim"
-            else:
-                x_dim_name = data_settings_cfgs[i]["Data"]["x_dim_name"]
-            if "lat_dim" in dims:
-                y_dim_name = "lat_dim"
-            else:
-                y_dim_name = data_settings_cfgs[i]["Data"]["y_dim_name"]
+            if "lon_dim" not in dims or "lat_dim" not in dims:
+                ds = ds.rename_dims({data_settings_cfgs[i]["Data"]["x_dim_name"]: "lon_dim"})
+                ds = ds.rename_dims({data_settings_cfgs[i]["Data"]["y_dim_name"]: "lat_dim"})
+            y_dim_name = "lat_dim"
+            x_dim_name = "lon_dim"
 
             # Select only the data we want
             ds = ds[data_settings_cfgs[i]["Data"]["selected_vars"]]
@@ -747,8 +744,8 @@ class Patcher:
         loaded_datasets = None
 
         start_time = time.time()
-        self.master_xarray_dataset_examples = self._create_master_xarray_dataset(loaded_datasets_examples, adjusted_x_dim_names_examples, adjusted_y_dim_names_examples, loaded_datetimes_examples, dataset_configs_examples)
-        self.master_xarray_dataset_labels = self._create_master_xarray_dataset(loaded_datasets_labels, adjusted_x_dim_names_labels, adjusted_y_dim_names_labels, loaded_datetimes_labels, dataset_configs_labels)
+        self.master_xarray_dataset_examples = self._create_master_xarray_dataset(loaded_datasets_examples, loaded_datetimes_examples, dataset_configs_examples)
+        self.master_xarray_dataset_labels = self._create_master_xarray_dataset(loaded_datasets_labels, loaded_datetimes_labels, dataset_configs_labels)
         print("Master dataset time: " + str(time.time() - start_time))
 
         # Free up memory
@@ -762,21 +759,7 @@ class Patcher:
 
     # Create an xarray dataset object that encompasses all of the currently loaded data from disk. 
     # This is to exploit the power of xarray datasets througout the rest of the patcher.
-    def _create_master_xarray_dataset(self, loaded_datasets, adjusted_x_dim_names, adjusted_y_dim_names, loaded_datetimes, loaded_dataset_settings):
-        # Make sure out x/y dims are all names the same for consistency. The coords should already 
-        # be named the same from the assign_coords lines in _load_datasets_from_disk
-        loaded_datasets_adjusted_dim_names = []
-        for i, loaded_dataset in enumerate(loaded_datasets):
-            if adjusted_x_dim_names[i] != "lon_dim" and "lon_dim" not in loaded_dataset.dims:
-                loaded_dataset = loaded_dataset.rename_dims({adjusted_x_dim_names[i]: "lon_dim"})
-            if adjusted_y_dim_names[i] != "lat_dim" and "lat_dim" not in loaded_dataset.dims:
-                loaded_dataset = loaded_dataset.rename_dims({adjusted_y_dim_names[i]: "lat_dim"})
-            loaded_datasets_adjusted_dim_names.append(loaded_dataset)
-            loaded_dataset.close()
-
-        # Try to free up some memory
-        loaded_datasets = None
-
+    def _create_master_xarray_dataset(self, loaded_datasets, loaded_datetimes, loaded_dataset_settings):
         # Make the datetimes list only contain numpy datetimes and not my datetimepair objects for later
         loaded_datetimes_np = []
         for loaded_datetime in loaded_datetimes:
@@ -801,10 +784,10 @@ class Patcher:
                         ds.close()
                     single_ds_group_of_times = []
                     single_ds_datetimes = []
-            single_ds_group_of_times.append(loaded_datasets_adjusted_dim_names[i])
+            single_ds_group_of_times.append(loaded_datasets[i])
             single_ds_datetimes.append(loaded_datetimes[i])
             last_ds_name = data_settings_cfg["dataset_name"]
-            loaded_datasets_adjusted_dim_names[i].close()
+            loaded_datasets[i].close()
         loaded_datasets_ordered_by_time.append(single_ds_group_of_times)
         loaded_datetimes_ordered_by_time.append(np.array(single_ds_datetimes, dtype=np.datetime64))
         dataset_names.append(data_settings_cfg["dataset_name"])
@@ -818,9 +801,9 @@ class Patcher:
         # Try to free up some memory
         for ds in single_ds_group_of_times:
             ds.close()
-        for ds in loaded_datasets_adjusted_dim_names:
+        for ds in loaded_datasets:
             ds.close()
-        loaded_datasets_adjusted_dim_names = None
+        loaded_datasets = None
         single_ds_group_of_times = None
 
         dataset_list_to_merge = []
@@ -856,7 +839,12 @@ class Patcher:
                 xarray_dataset_datetimes[dataset_name + "_time"] = (dataset_name + "_time_dim", loaded_datetimes_ordered_by_time[i])
 
         if len(dataset_list_to_merge) != 1:
-            master_xarray_dataset = xr.merge(dataset_list_to_merge)
+            try:
+                master_xarray_dataset = xr.merge(dataset_list_to_merge)
+            except:
+                for i, dataset_name in enumerate(dataset_names):
+                    new_ds_var_names = np.char.add(np.array(list(dataset_list_to_merge[i].keys())), "_" + dataset_name)
+                    dataset_list_to_merge[i] = dataset_list_to_merge[i].rename_vars(dict(zip(list(dataset_list_to_merge[i].keys()), new_ds_var_names)))
         else:
             master_xarray_dataset = copy.deepcopy(dataset_list_to_merge[0])
         master_xarray_dataset = master_xarray_dataset.assign(xarray_dataset_datetimes)
@@ -1056,7 +1044,14 @@ class Patcher:
         examples_ds = examples_ds.drop("time", errors="ignore")
         labels_ds = labels_ds.drop("time", errors="ignore")
 
-        ds = xr.merge([examples_ds, labels_ds])
+        try:
+            ds = xr.merge([examples_ds, labels_ds])
+        except:
+            new_example_var_names = np.char.add(np.array(list(examples_ds.keys())), "_example")
+            new_label_var_names = np.char.add(np.array(list(labels_ds.keys())), "_label")
+            examples_ds = examples_ds.rename_vars(dict(zip(list(examples_ds.keys()), new_example_var_names)))
+            labels_ds = labels_ds.rename_vars(dict(zip(list(labels_ds.keys()), new_label_var_names)))
+            ds = xr.merge([examples_ds, labels_ds])
 
         lat_len = ds.dims["lat_dim"]
         lon_len = ds.dims["lon_dim"]
