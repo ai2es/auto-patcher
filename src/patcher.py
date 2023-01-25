@@ -748,6 +748,9 @@ class Patcher:
         self.master_xarray_dataset_labels = self._create_master_xarray_dataset(loaded_datasets_labels, loaded_datetimes_labels, dataset_configs_labels)
         print("Master dataset time: " + str(time.time() - start_time))
 
+        if self.dataset_empty_or_out_of_range:
+            return
+
         # Free up memory
         for ds in loaded_datasets_examples:
             ds.close()
@@ -845,6 +848,12 @@ class Patcher:
                 for i, dataset_name in enumerate(dataset_names):
                     new_ds_var_names = np.char.add(np.array(list(dataset_list_to_merge[i].keys())), "_" + dataset_name)
                     dataset_list_to_merge[i] = dataset_list_to_merge[i].rename_vars(dict(zip(list(dataset_list_to_merge[i].keys()), new_ds_var_names)))
+                try:
+                    # Second try is for case where latlons actually don't line up and the search step has to be skipped.
+                    master_xarray_dataset = xr.merge(dataset_list_to_merge)
+                except:
+                    self.dataset_empty_or_out_of_range = True
+                    return
         else:
             master_xarray_dataset = copy.deepcopy(dataset_list_to_merge[0])
         master_xarray_dataset = master_xarray_dataset.assign(xarray_dataset_datetimes)
@@ -1074,7 +1083,7 @@ class Patcher:
                     valid_pixels[x, y, ...] = 1
 
         if not self.top_settings_patches["ignore_nans"]:
-            ds = ds.to_array()
+            ds = ds.reset_coords().to_array() #reset_coords is used because it forces the lat lons to also be included in nan checker.
             ds = ds.transpose("lat_dim", ...)
             ds = ds.transpose("lon_dim", ...)
             ds_dims = np.array(list(ds.dims))
