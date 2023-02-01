@@ -782,18 +782,17 @@ class Patcher:
                 if last_ds_name != "":
                     loaded_datasets_ordered_by_time.append(single_ds_group_of_times)
                     loaded_datetimes_ordered_by_time.append(np.array(single_ds_datetimes, dtype=np.datetime64))
-                    dataset_names.append(data_settings_cfg["dataset_name"])
                     for ds in single_ds_group_of_times:
                         ds.close()
                     single_ds_group_of_times = []
                     single_ds_datetimes = []
+                dataset_names.append(data_settings_cfg["dataset_name"])
             single_ds_group_of_times.append(loaded_datasets[i])
             single_ds_datetimes.append(loaded_datetimes[i])
             last_ds_name = data_settings_cfg["dataset_name"]
             loaded_datasets[i].close()
         loaded_datasets_ordered_by_time.append(single_ds_group_of_times)
         loaded_datetimes_ordered_by_time.append(np.array(single_ds_datetimes, dtype=np.datetime64))
-        dataset_names.append(data_settings_cfg["dataset_name"])
 
         # Create a list that keeps track of all lengths of time we are working with based on the number of xarray datasets in each of
         # the above described nested lists
@@ -1050,8 +1049,12 @@ class Patcher:
     
     def get_valid_pixels(self, examples_ds, labels_ds):
         patch_size = self.top_settings_patches["patch_size"]
-        examples_ds = examples_ds.drop("time", errors="ignore")
-        labels_ds = labels_ds.drop("time", errors="ignore")
+        for key in examples_ds.keys():
+            if "time" in key:
+                examples_ds = examples_ds.drop(key)
+        for key in labels_ds.keys():
+            if "time" in key:
+                labels_ds = labels_ds.drop(key)
 
         try:
             ds = xr.merge([examples_ds, labels_ds])
