@@ -36,7 +36,7 @@ def wofs_bounds(ds, maximized_dims):
         data_var_shape = data_var.shape
         bad_pixel_bool = np.logical_or(data_var < field_bounds[key][0], data_var > field_bounds[key][1])
         if len(data_var_shape) > 2:
-            bad_pixel_bool = np.any(bad_pixel_bool, axis=np.arange(2,len(data_var_shape)))
+            bad_pixel_bool = np.any(bad_pixel_bool, axis=tuple(np.arange(2,len(data_var_shape))))
         valid_pixels[np.nonzero(bad_pixel_bool)] = 0
     
     return valid_pixels

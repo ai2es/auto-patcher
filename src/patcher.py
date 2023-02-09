@@ -917,20 +917,20 @@ class Patcher:
                     valid_pixels[x, y, ...] = 1
 
         if not self.top_settings_patches["ignore_nans"]:
-            ds = ds.reset_coords().to_array() #reset_coords is used because it forces the lat lons to also be included in nan checker.
-            ds = ds.transpose("lat_dim", ...)
-            ds = ds.transpose("lon_dim", ...)
-            ds_dims = np.array(list(ds.dims))
-            ds_dims_to_collapse = list(ds.dims)
+            da = ds.reset_coords().to_array() #reset_coords is used because it forces the lat lons to also be included in nan checker.
+            da = da.transpose("lat_dim", ...)
+            da = da.transpose("lon_dim", ...)
+            ds_dims = np.array(list(da.dims))
+            ds_dims_to_collapse = list(da.dims)
             ds_dims_to_collapse.remove("lat_dim")
             ds_dims_to_collapse.remove("lon_dim")
             for dim_name in self.top_settings_patches["maximized_dims"]:
                 ds_dims_to_collapse.remove(dim_name)
             ds_dims_to_collapse = np.array(ds_dims_to_collapse)
             ds_dims_to_collapse = np.in1d(ds_dims, ds_dims_to_collapse).nonzero()[0]
-            ds = ds.to_numpy()
+            da = da.to_numpy()
 
-            nan_mask = np.any(np.isnan(ds), axis=tuple(ds_dims_to_collapse))
+            nan_mask = np.any(np.isnan(da), axis=tuple(ds_dims_to_collapse))
             nan_mask = np.apply_over_axes(self.mask_checker_along_axis, nan_mask, axes=[0,1])
             valid_pixels = np.logical_and(valid_pixels, np.logical_not(nan_mask))
         
