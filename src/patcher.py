@@ -942,8 +942,11 @@ class Patcher:
                 for i in np.arange(2,len(valid_pixels.shape)):
                     filter_mask = np.expand_dims(filter_mask, -1)
                 filter_mask = np.tile(filter_mask, valid_pixels_shape[2:])
+            
+            filter_mask = np.logical_not(filter_mask)
+            filter_mask = np.apply_over_axes(self.mask_checker_along_axis, filter_mask, axes=[0,1])
 
-            valid_pixels = np.logical_and(valid_pixels, filter_mask)
+            valid_pixels = np.logical_and(valid_pixels, np.logical_not(filter_mask))
         
         valid_pixels_balanced = []
         for filter_str in self.top_settings_patches["filters_balanced"]:
@@ -954,8 +957,11 @@ class Patcher:
                 for i in np.arange(2,len(valid_pixels.shape)):
                     filter_mask = np.expand_dims(filter_mask, -1)
                 filter_mask = np.tile(filter_mask, valid_pixels_shape[2:])
+            
+            filter_mask = np.logical_not(filter_mask)
+            filter_mask = np.apply_over_axes(self.mask_checker_along_axis, filter_mask, axes=[0,1])
 
-            valid_pixels_balanced.append(np.logical_and(valid_pixels, filter_mask))
+            valid_pixels_balanced.append(np.logical_and(valid_pixels, np.logical_not(filter_mask)))
         
         if len(valid_pixels_balanced) == 0:
             valid_pixels_balanced = [valid_pixels]
