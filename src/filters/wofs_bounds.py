@@ -23,14 +23,25 @@ field_bounds = {
     "MESH_class_bin": [0,1]
 }
 
+# NOTE: This may crash if dataset with only one data variable is passed in
 def wofs_bounds(ds, maximized_dims):
-    ds_dims = np.array(list(ds.dims))
-    ds_dims_to_collapse = list(ds.dims)
+    ds = ds.transpose("lat_dim", ...)
+    ds = ds.transpose("lon_dim", ...)
+
+    da = ds.to_array()
+
+    ds_dims = list(da.dims)
+    ds_dims.remove("variable")
+    ds_dims = np.array(ds_dims)
+
+    ds_dims_to_collapse = list(da.dims)
     ds_dims_to_collapse.remove("lat_dim")
     ds_dims_to_collapse.remove("lon_dim")
+    ds_dims_to_collapse.remove("variable")
     for dim_name in maximized_dims:
         ds_dims_to_collapse.remove(dim_name)
     ds_dims_to_collapse = np.array(ds_dims_to_collapse)
+
     ds_dims_to_collapse = np.in1d(ds_dims, ds_dims_to_collapse).nonzero()[0]
 
     lat_len = ds.dims["lat_dim"]
@@ -40,9 +51,6 @@ def wofs_bounds(ds, maximized_dims):
         valid_pixels_shape.append(ds.dims[dim_name])
     valid_pixels_shape = tuple(valid_pixels_shape)
     valid_pixels = np.ones(valid_pixels_shape, dtype=np.int64)
-
-    ds = ds.transpose("lat_dim", ...)
-    ds = ds.transpose("lon_dim", ...)
 
     for key in ds.keys():
         data_var = ds[key].to_numpy()

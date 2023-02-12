@@ -2,13 +2,23 @@ import numpy as np
 from wofs_bounds import field_bounds
 
 def broken_wofs(ds, maximized_dims):
-    ds_dims = np.array(list(ds.dims))
-    ds_dims_to_collapse = list(ds.dims)
+    ds = ds.transpose("lat_dim", ...)
+    ds = ds.transpose("lon_dim", ...)
+
+    da = ds.to_array()
+
+    ds_dims = list(da.dims)
+    ds_dims.remove("variable")
+    ds_dims = np.array(ds_dims)
+
+    ds_dims_to_collapse = list(da.dims)
     ds_dims_to_collapse.remove("lat_dim")
     ds_dims_to_collapse.remove("lon_dim")
+    ds_dims_to_collapse.remove("variable")
     for dim_name in maximized_dims:
         ds_dims_to_collapse.remove(dim_name)
     ds_dims_to_collapse = np.array(ds_dims_to_collapse)
+
     ds_dims_to_collapse = np.in1d(ds_dims, ds_dims_to_collapse).nonzero()[0]
 
     lat_len = ds.dims["lat_dim"]
