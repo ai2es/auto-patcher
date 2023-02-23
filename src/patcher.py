@@ -16,6 +16,7 @@ import netCDF4 as nc
 from tqdm import tqdm
 import time
 import importlib
+from helper_functions import Kernelizer, setup_valid_pixel_array, get_indices_of_dims_to_collapse
 
 
 # NOTE: netcdf4 also need to be manually installed as dependencies
@@ -860,17 +861,6 @@ class Patcher:
 
         return reproj_datasets
 
-
-    def patch_mask_checker(self, array_1d):
-        patch_size = self.top_settings_patches["patch_size"]
-        for i in range(len(array_1d)-patch_size):
-            array_1d[i] = np.any(array_1d[i:i+patch_size])
-        return array_1d
-
-
-    def mask_checker_along_axis(self, array_2d, axis):
-        return np.apply_along_axis(self.patch_mask_checker, axis, array_2d)
-
     
     def get_valid_pixels(self, examples_ds, labels_ds):
         patch_size = self.top_settings_patches["patch_size"]
@@ -899,17 +889,12 @@ class Patcher:
         lat_len = ds.dims["lat_dim"]
         lon_len = ds.dims["lon_dim"]
 
-        valid_pixels_shape = [lon_len, lat_len]
-        for dim_name in self.top_settings_patches["maximized_dims"]:
-            valid_pixels_shape.append(ds.dims[dim_name])
-        valid_pixels_shape = tuple(valid_pixels_shape)
-
         if self.top_settings_patches["overlap_patches"]:
-            valid_pixels = np.ones(valid_pixels_shape, dtype=np.int64)
+            valid_pixels = setup_valid_pixel_array(ds, self.top_settings_patches["maximized_dims"], True)
             valid_pixels[lon_len - patch_size:, :, ...] = 0
             valid_pixels[:, lat_len - patch_size:, ...] = 0
         else:
-            valid_pixels = np.zeros(valid_pixels_shape, dtype=np.int64)
+            valid_pixels = setup_valid_pixel_array(ds, self.top_settings_patches["maximized_dims"], False)
             x_indices = np.arange(0, lon_len - patch_size, patch_size)
             y_indices = np.arange(0, lat_len - patch_size, patch_size)
             for x in x_indices:
@@ -920,48 +905,50 @@ class Patcher:
             da = ds.reset_coords().to_array() #reset_coords is used because it forces the lat lons to also be included in nan checker.
             da = da.transpose("lat_dim", ...)
             da = da.transpose("lon_dim", ...)
-            ds_dims = np.array(list(da.dims))
-            ds_dims_to_collapse = list(da.dims)
-            ds_dims_to_collapse.remove("lat_dim")
-            ds_dims_to_collapse.remove("lon_dim")
-            for dim_name in self.top_settings_patches["maximized_dims"]:
-                ds_dims_to_collapse.remove(dim_name)
-            ds_dims_to_collapse = np.array(ds_dims_to_collapse)
-            ds_dims_to_collapse = np.in1d(ds_dims, ds_dims_to_collapse).nonzero()[0]
+
+            ds_dims_to_collapse = get_indices_of_dims_to_collapse(da, self.top_settings_patches["maximized_dims"])
+
             da = da.to_numpy()
 
             nan_mask = np.any(np.isnan(da), axis=tuple(ds_dims_to_collapse))
-            nan_mask = np.apply_over_axes(self.mask_checker_along_axis, nan_mask, axes=[0,1])
+            kernelizer = Kernelizer(np.any, patch_size)
+            nan_mask = kernelizer(nan_mask)
             valid_pixels = np.logical_and(valid_pixels, np.logical_not(nan_mask))
         
         for filter_str in self.top_settings_patches["filters"]:
             filter_import = importlib.import_module("filters." + filter_str)
-            filter_mask = eval("filter_import." + filter_str + "(ds,self.top_settings_patches['maximized_dims'])")
+            filter_mask = eval("filter_import." + filter_str + "(ds,self.top_settings_patches['maximized_dims'],patch_size)")
 
             if len(valid_pixels.shape) > 2 and len(filter_mask.shape) == 2:
                 for i in np.arange(2,len(valid_pixels.shape)):
                     filter_mask = np.expand_dims(filter_mask, -1)
-                filter_mask = np.tile(filter_mask, valid_pixels_shape[2:])
+                filter_mask = np.tile(filter_mask, valid_pixels.shape[2:])
             
-            filter_mask = np.logical_not(filter_mask)
-            filter_mask = np.apply_over_axes(self.mask_checker_along_axis, filter_mask, axes=[0,1])
+            if not filter_import.THIS_FILTER_RETURNS_PATCH_MASK:
+                filter_mask = np.logical_not(filter_mask)
+                kernelizer = Kernelizer(np.any, patch_size)
+                filter_mask = kernelizer(filter_mask)
+                filter_mask = np.logical_not(filter_mask)
 
-            valid_pixels = np.logical_and(valid_pixels, np.logical_not(filter_mask))
+            valid_pixels = np.logical_and(valid_pixels, filter_mask)
         
         valid_pixels_balanced = []
         for filter_str in self.top_settings_patches["filters_balanced"]:
             filter_import = importlib.import_module("filters." + filter_str)
-            filter_mask = eval("filter_import." + filter_str + "(ds,self.top_settings_patches['maximized_dims'])")
+            filter_mask = eval("filter_import." + filter_str + "(ds,self.top_settings_patches['maximized_dims'],patch_size)")
 
             if len(valid_pixels.shape) > 2 and len(filter_mask.shape) == 2:
                 for i in np.arange(2,len(valid_pixels.shape)):
                     filter_mask = np.expand_dims(filter_mask, -1)
-                filter_mask = np.tile(filter_mask, valid_pixels_shape[2:])
+                filter_mask = np.tile(filter_mask, valid_pixels.shape[2:])
             
-            filter_mask = np.logical_not(filter_mask)
-            filter_mask = np.apply_over_axes(self.mask_checker_along_axis, filter_mask, axes=[0,1])
+            if not filter_import.THIS_FILTER_RETURNS_PATCH_MASK:
+                filter_mask = np.logical_not(filter_mask)
+                kernelizer = Kernelizer(np.any, patch_size)
+                filter_mask = kernelizer(filter_mask)
+                filter_mask = np.logical_not(filter_mask)
 
-            valid_pixels_balanced.append(np.logical_and(valid_pixels, np.logical_not(filter_mask)))
+            valid_pixels_balanced.append(np.logical_and(valid_pixels, filter_mask))
         
         if len(valid_pixels_balanced) == 0:
             valid_pixels_balanced = [valid_pixels]
