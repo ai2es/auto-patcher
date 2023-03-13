@@ -878,13 +878,13 @@ class Patcher:
                 labels_ds = labels_ds.drop(coord)
 
         try:
-            ds = xr.merge([examples_ds, labels_ds])
+            ds = xr.merge(xr.broadcast(examples_ds, labels_ds))
         except:
             new_example_var_names = np.char.add(np.array(list(examples_ds.keys())), "_example")
             new_label_var_names = np.char.add(np.array(list(labels_ds.keys())), "_label")
             examples_ds = examples_ds.rename_vars(dict(zip(list(examples_ds.keys()), new_example_var_names)))
             labels_ds = labels_ds.rename_vars(dict(zip(list(labels_ds.keys()), new_label_var_names)))
-            ds = xr.merge([examples_ds, labels_ds])
+            ds = xr.merge(xr.broadcast(examples_ds, labels_ds))
 
         lat_len = ds.dims["lat_dim"]
         lon_len = ds.dims["lon_dim"]
@@ -912,7 +912,7 @@ class Patcher:
 
             nan_mask = np.any(np.isnan(da), axis=tuple(ds_dims_to_collapse))
             kernelizer = Kernelizer(np.any, patch_size)
-            nan_mask = kernelizer(nan_mask)
+            nan_mask = kernelizer.kernelize(nan_mask)
             valid_pixels = np.logical_and(valid_pixels, np.logical_not(nan_mask))
         
         for filter_str in self.top_settings_patches["filters"]:
@@ -927,7 +927,7 @@ class Patcher:
             if not filter_import.THIS_FILTER_RETURNS_PATCH_MASK:
                 filter_mask = np.logical_not(filter_mask)
                 kernelizer = Kernelizer(np.any, patch_size)
-                filter_mask = kernelizer(filter_mask)
+                filter_mask = kernelizer.kernelize(filter_mask)
                 filter_mask = np.logical_not(filter_mask)
 
             valid_pixels = np.logical_and(valid_pixels, filter_mask)
@@ -945,7 +945,7 @@ class Patcher:
             if not filter_import.THIS_FILTER_RETURNS_PATCH_MASK:
                 filter_mask = np.logical_not(filter_mask)
                 kernelizer = Kernelizer(np.any, patch_size)
-                filter_mask = kernelizer(filter_mask)
+                filter_mask = kernelizer.kernelize(filter_mask)
                 filter_mask = np.logical_not(filter_mask)
 
             valid_pixels_balanced.append(np.logical_and(valid_pixels, filter_mask))

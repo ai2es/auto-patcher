@@ -1,5 +1,5 @@
 import numpy as np
-from ..helper_functions import setup_valid_pixel_array, get_indices_of_dims_to_collapse
+from helper_functions import setup_valid_pixel_array, get_indices_of_dims_to_collapse
 
 THIS_FILTER_RETURNS_PATCH_MASK = False
 

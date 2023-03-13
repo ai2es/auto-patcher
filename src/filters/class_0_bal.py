@@ -1,4 +1,4 @@
-from bin_class_bal import bin_class_bal
+from filters.bin_class_bal import bin_class_bal
 
 THIS_FILTER_RETURNS_PATCH_MASK = True
 
