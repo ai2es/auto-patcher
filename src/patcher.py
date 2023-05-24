@@ -651,6 +651,8 @@ class Patcher:
             ds = ds.assign_coords(lon=((y_dim_name,x_dim_name), lons))
             ds = ds.assign_coords(lat=((y_dim_name,x_dim_name), lats))
 
+            ds = ds.transpose("lat_dim", "lon_dim", ...)
+
             ds = self._select_specific_dims(ds, data_settings_cfgs, i)
             ds = self._add_custom_vars(ds, data_settings_cfgs, i, False)
 
@@ -762,16 +764,18 @@ class Patcher:
 
         dataset_list_to_merge = []
         if self.top_settings_patches["make_time_3d"]:
-            # Check to make sure that we only have either datasets with one timestep or datasets with the same n number of timesteps
-            unqiue_grouping_lens = np.unique(grouping_lens)
-            if len(unqiue_grouping_lens) > 2 or (len(unqiue_grouping_lens) == 2 and 1 not in unqiue_grouping_lens):
-                raise Exception("The time_offsets you have selected are not acceptable for the 3D patch case. You must have the same number of time_offsets in each dataset you want offsetted or a dataset should not have any offset.")
+            # For the 3D case, all combined datasets must have the same length in time.
+            # If n is the number of timesteps for the largest selected dataset and some other datasets have k timesteps where k < n, 
+            # the following block will copy the final timestep n - k times for each of the smaller datasets so that the above requirement is met.
+            max_grouping_len = np.max(grouping_lens)
 
             for dataset_list in loaded_datasets_ordered_by_time:
-                if len(dataset_list) == 1 and unqiue_grouping_lens[-1] != 1:
-                    dataset_list_to_concat = [copy.deepcopy(dataset_list[0]) for i in range(unqiue_grouping_lens[-1])]
+                if max_grouping_len > 1 and len(dataset_list) < max_grouping_len:
+                    dataset_list_to_concat = copy.deepcopy(dataset_list)
+                    for i in range(max_grouping_len - len(dataset_list)):
+                        dataset_list_to_concat.append(copy.deepcopy(dataset_list[-1]))
                     dataset_list_to_merge.append(xr.concat(dataset_list_to_concat, dim="time_dim"))
-                elif len(unqiue_grouping_lens) == 1 and len(dataset_list) == 1:
+                elif max_grouping_len == 1 and len(dataset_list) == 1:
                     dataset_list_to_merge.append(dataset_list[0])
                 else:
                     dataset_list_to_merge.append(xr.concat(dataset_list, dim="time_dim"))
