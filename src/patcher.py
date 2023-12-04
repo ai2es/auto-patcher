@@ -621,6 +621,7 @@ class Patcher:
             if data_settings_cfgs[i]["Data"]["has_time_cord"]:
                 time_dim_name = data_settings_cfgs[i]["Data"]["time_dim_name"]
                 ds = ds[{time_dim_name: time_index}]
+                ds = ds.drop_vars(data_settings_cfgs[i]["Data"]["time_cord_name"])
 
             if len(lons.shape) == 1:
                 lons, lats = np.meshgrid(lons, lats)
@@ -639,10 +640,6 @@ class Patcher:
             # Select only the data we want
             ds = ds[data_settings_cfgs[i]["Data"]["selected_vars"]]
 
-            # Set to float32 if needed:
-            if self.top_settings_patches["make_float32"]:
-                ds = ds.astype(np.float32)
-
             # If only one key is given ds is reverted to a xarray dataarray.
             # This is not useful for later functions so this is changed back to a xarray dataset
             if type(ds) is xr.core.dataarray.DataArray:
@@ -656,6 +653,10 @@ class Patcher:
             ds = self._select_specific_dims(ds, data_settings_cfgs, i)
             ds = self._add_custom_vars(ds, data_settings_cfgs, i, False)
 
+            # Set to float32 if needed:
+            if self.top_settings_patches["make_float32"]:
+                ds = ds.astype(np.float32)
+
             if data_settings_cfgs[i]["Data"]["is_label_data"]:
                 loaded_datetimes_labels.append(self.non_offset_datetimes[i][time_str_index])
                 adjusted_x_dim_names_labels.append(x_dim_name)
@@ -666,6 +667,9 @@ class Patcher:
                 adjusted_x_dim_names_examples.append(x_dim_name)
                 adjusted_y_dim_names_examples.append(y_dim_name)
                 dataset_configs_examples.append(data_settings_cfgs[i])
+
+            if "time" in list(ds.coords):
+                ds = ds.drop_vars("time")
             
             loaded_datasets.append(ds)
 
@@ -868,6 +872,9 @@ class Patcher:
     
     def get_valid_pixels(self, examples_ds, labels_ds):
         patch_size = self.top_settings_patches["patch_size"]
+        non_overlap_patch_offset_x = self.top_settings_patches["non_overlap_patch_offset_x"]
+        non_overlap_patch_offset_y = self.top_settings_patches["non_overlap_patch_offset_y"]
+        
         for key in examples_ds.keys():
             if "time" in key:
                 examples_ds = examples_ds.drop(key)
@@ -899,8 +906,8 @@ class Patcher:
             valid_pixels[:, lat_len - patch_size:, ...] = 0
         else:
             valid_pixels = setup_valid_pixel_array(ds, self.top_settings_patches["maximized_dims"], False)
-            x_indices = np.arange(0, lon_len - patch_size, patch_size)
-            y_indices = np.arange(0, lat_len - patch_size, patch_size)
+            x_indices = np.arange(non_overlap_patch_offset_x, lon_len - patch_size + non_overlap_patch_offset_x, patch_size)
+            y_indices = np.arange(non_overlap_patch_offset_y, lat_len - patch_size + non_overlap_patch_offset_y, patch_size)
             for x in x_indices:
                 for y in y_indices:
                     valid_pixels[x, y, ...] = 1

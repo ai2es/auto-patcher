@@ -24,6 +24,9 @@ field_bounds = {
     "lcl_mu": [0, 82021],
     "MESH95": [0, 254],
     "MESH_class_bin": [0,1],
+    "MESH_class_bin_severe": [0,1],
+    "comp_dz_class_bin": [0,1],
+    "ZH_class_bin": [0,1],
     "strikes": [0,100000],
     "ZH": [-10000, 100000]
 }
