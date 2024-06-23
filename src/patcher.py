@@ -826,7 +826,7 @@ class Patcher:
         return master_xarray_dataset
 
 
-    def _reproject_datasets(self, loaded_datasets):# , reproj_ds_index, data_settings_cfgs):
+    def _reproject_datasets(self, loaded_datasets):
         reproj_datasets = []
         self.dataset_empty_or_out_of_range = False
         data_settings_cfgs = self.data_settings
